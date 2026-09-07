@@ -1,0 +1,216 @@
+---
+title: "Homework #3: Logistic Regression -- Predicting Neighborhood Crime Risk"
+subtitle: "DATA 621 -- Business Analytics and Data Mining"
+author:
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronsteain
+  - name: Aaliyah John-Henry
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.5
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(car)
+library(caret)
+library(pROC)
+
+theme_set(theme_minimal())
+```
+
+# Introduction
+
+In this assignment we build a binary logistic regression model to predict `target`, whether a
+neighborhood's crime rate is above the median (1) or not (0), using demographic, housing, and
+environmental predictors.
+
+# Data Exploration
+
+```{r load-data}
+#| label: load-data
+
+train <- read_csv("data/crime-training-data_modified.csv")
+evaluation <- read_csv("data/crime-evaluation-data_modified.csv")
+```
+
+## Size and Structure
+
+```{r data-structure}
+#| label: data-structure
+
+# TODO: dim(), glimpse(), etc.
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+#| label: summary-stats
+
+# TODO: mean / sd / median summary table
+```
+
+## Distributions
+
+```{r distributions}
+#| label: fig-distributions
+#| fig-cap: "Distributions of predictor variables"
+
+# TODO: histograms or density plots of each variable
+```
+
+## Boxplots by Target
+
+```{r boxplots}
+#| label: fig-boxplots
+#| fig-cap: "Boxplots of predictors split by target class"
+
+# TODO: boxplots of each predictor split by target
+```
+
+## Correlation with Target
+
+```{r correlation}
+#| label: fig-correlation
+#| fig-cap: "Correlation matrix of all variables"
+
+# TODO: correlation matrix / correlation with target
+```
+
+## Missing Data
+
+```{r missing-data}
+#| label: missing-data
+
+# TODO: count of missing values per variable
+```
+
+_Discuss what the exploration reveals: notable distributions, skew, outliers, class balance of
+`target`, correlations with the target, and multicollinearity among predictors._
+
+# Data Preparation
+
+## Missing Value Imputation
+
+_Describe the imputation strategy and, where relevant, add missingness flag variables._
+
+```{r impute}
+#| label: impute
+
+# TODO: missingness flags and imputation
+```
+
+## Feature Transformations
+
+_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for
+each._
+
+```{r transformations}
+#| label: transformations
+
+# TODO: bucketing, log/sqrt/Box-Cox transforms, derived variables
+```
+
+# Build Models
+
+## Model 1
+
+_Describe the variable selection rationale for this model._
+
+```{r model-1}
+#| label: model-1
+
+# TODO: fit first logistic model
+```
+
+## Model 2
+
+_Describe the variable selection rationale for this model (e.g., stepwise selection, transformed
+variables)._
+
+```{r model-2}
+#| label: model-2
+
+# TODO: fit second logistic model
+```
+
+## Model 3
+
+_Describe the variable selection rationale for this model._
+
+```{r model-3}
+#| label: model-3
+
+# TODO: fit third logistic model
+```
+
+## Coefficient Discussion
+
+_Discuss whether coefficient signs and magnitudes make sense (e.g., odds ratios via
+`exp(coef(model))`). Flag and discuss any counterintuitive coefficients and whether the variable
+is retained._
+
+# Select Models
+
+## Multicollinearity
+
+```{r vif}
+#| label: vif
+
+# TODO: variance inflation factors
+```
+
+## Model Comparison
+
+```{r model-comparison}
+#| label: model-comparison
+
+# TODO: compare models on AIC, log-likelihood, McFadden's pseudo-R2
+```
+
+## Classification Performance
+
+```{r classification-metrics}
+#| label: classification-metrics
+
+# TODO: predicted probabilities/classes, confusion matrix
+```
+
+```{r roc-auc}
+#| label: fig-roc
+#| fig-cap: "ROC curve for the selected model"
+
+# TODO: ROC curve and AUC
+```
+
+## Final Model Selection
+
+_State which model is selected as final and justify the choice against the criteria discussed
+above (AIC, log-likelihood, ROC/AUC, parsimony, interpretability)._
+
+# Predictions on Evaluation Data
+
+```{r predictions}
+#| label: predictions
+
+# TODO: apply the same preparation steps used on train to evaluation, then predict and write out
+```
+
+# Appendix: R Code
+
+_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
+additional content is needed here unless supplementary code is included._

@@ -1,0 +1,229 @@
+---
+title: "Homework #1: Moneyball -- Predicting Team Wins"
+subtitle: "DATA 621 -- Business Analytics and Data Mining"
+author:
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronsteain
+  - name: Aaliyah John-Henry
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.5
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(mice)
+library(car)
+library(caret)
+
+theme_set(theme_minimal())
+```
+
+# Introduction
+
+In this assignment we build a multiple linear regression model to predict `TARGET_WINS`, the
+number of wins for a professional baseball team, using team-level batting, baserunning,
+pitching, and fielding statistics adjusted to a 162 game season.
+
+# Data Exploration
+
+```{r load-data}
+#| label: load-data
+
+train <- read_csv("data/moneyball-training-data.csv")
+evaluation <- read_csv("data/moneyball-evaluation-data.csv")
+
+train <- train %>% select(-INDEX)
+```
+
+## Size and Structure
+
+```{r data-structure}
+#| label: data-structure
+
+# TODO: dim(), glimpse(), etc.
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+#| label: summary-stats
+
+# TODO: mean / sd / median summary table
+```
+
+## Distributions
+
+```{r distributions}
+#| label: fig-distributions
+#| fig-cap: "Distributions of predictor and target variables"
+
+# TODO: histograms or density plots of each variable
+```
+
+## Boxplots
+
+```{r boxplots}
+#| label: fig-boxplots
+#| fig-cap: "Boxplots of predictor and target variables"
+
+# TODO: boxplots of each variable
+```
+
+## Correlation with Target
+
+```{r correlation}
+#| label: fig-correlation
+#| fig-cap: "Correlation matrix of all variables"
+
+# TODO: correlation matrix / correlation with TARGET_WINS
+```
+
+## Missing Data
+
+```{r missing-data}
+#| label: fig-missing
+#| fig-cap: "Count and proportion of missing values by variable"
+
+# TODO: count / proportion of missing values per variable
+```
+
+_Discuss what the exploration reveals: notable distributions, skew, outliers, correlations with
+`TARGET_WINS`, multicollinearity among predictors, and which variables have meaningful amounts of
+missing data._
+
+# Data Preparation
+
+## Missing Value Imputation
+
+_Describe the imputation strategy (e.g., median imputation, or multiple imputation via `mice`)
+and, where relevant, add missingness flag variables._
+
+```{r missing-flags}
+#| label: missing-flags
+
+# TODO: create missingness flag variables
+```
+
+```{r impute}
+#| label: impute
+
+# TODO: impute missing values
+```
+
+## Feature Transformations
+
+_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived ratio/combination variables and
+the rationale for each._
+
+```{r transformations}
+#| label: transformations
+
+# TODO: bucketing, log/sqrt/Box-Cox transforms, derived/combined variables
+```
+
+## Prepared Data Summary
+
+```{r prepared-summary}
+#| label: prepared-summary
+
+# TODO: summarize the prepared data set
+```
+
+# Build Models
+
+## Model 1
+
+_Describe the variable selection rationale for this model._
+
+```{r model-1}
+#| label: model-1
+
+# TODO: fit first model
+```
+
+## Model 2
+
+_Describe the variable selection rationale for this model (e.g., transformed variables, subset of
+predictors)._
+
+```{r model-2}
+#| label: model-2
+
+# TODO: fit second model
+```
+
+## Model 3
+
+_Describe the variable selection rationale for this model._
+
+```{r model-3}
+#| label: model-3
+
+# TODO: fit third model
+```
+
+## Coefficient Discussion
+
+_Discuss whether coefficient signs and magnitudes align with the theoretical effects noted in the
+assignment (e.g., positive vs. negative impact on wins). Flag and discuss any counterintuitive
+coefficients and whether the variable is retained._
+
+# Select Models
+
+## Multicollinearity
+
+```{r vif}
+#| label: vif
+
+# TODO: variance inflation factors
+```
+
+## Model Comparison
+
+```{r model-comparison}
+#| label: model-comparison
+
+# TODO: compare models on Adjusted R2, RMSE, F-statistic, AIC/BIC
+```
+
+## Residual Diagnostics
+
+```{r residual-diagnostics}
+#| label: fig-residuals
+#| fig-cap: "Residual diagnostic plots for the selected model"
+
+# TODO: residual diagnostic plots
+```
+
+## Final Model Selection
+
+_State which model is selected as final and justify the choice against the criteria discussed
+above (Adjusted R2, RMSE, F-statistic, parsimony, interpretability, residual behavior)._
+
+# Predictions on Evaluation Data
+
+```{r predictions}
+#| label: predictions
+
+# TODO: apply the same preparation steps used on train to evaluation, then predict and write out
+```
+
+# Appendix: R Code
+
+_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
+additional content is needed here unless supplementary code is included._

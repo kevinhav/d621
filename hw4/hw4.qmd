@@ -1,0 +1,241 @@
+---
+title: "Homework #4: Auto Insurance -- Crash Probability and Cost"
+subtitle: "DATA 621 -- Business Analytics and Data Mining"
+author:
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronsteain
+  - name: Aaliyah John-Henry
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.5
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(car)
+library(caret)
+library(pROC)
+
+theme_set(theme_minimal())
+```
+
+# Introduction
+
+In this assignment we build two families of models on auto insurance customer data: (1) binary
+logistic regression models predicting `TARGET_FLAG`, whether a customer will crash their car, and
+(2) multiple linear regression models predicting `TARGET_AMT`, the cost of the crash given that
+one occurs.
+
+# Data Exploration
+
+```{r load-data}
+#| label: load-data
+
+train <- read_csv("data/insurance-training-data.csv")
+evaluation <- read_csv("data/insurance-evaluation-data.csv")
+
+train <- train %>% select(-INDEX)
+```
+
+## Size and Structure
+
+```{r data-structure}
+#| label: data-structure
+
+# TODO: dim(), glimpse(), etc.
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+#| label: summary-stats
+
+# TODO: mean / sd / median summary table
+```
+
+## Distributions
+
+```{r distributions}
+#| label: fig-distributions
+#| fig-cap: "Distributions of numeric variables"
+
+# TODO: histograms or density plots of numeric variables
+```
+
+## Categorical Variables
+
+```{r categorical}
+#| label: fig-categorical
+#| fig-cap: "Bar charts of categorical variables"
+
+# TODO: bar charts of categorical variables
+```
+
+## Correlation with Targets
+
+```{r correlation}
+#| label: fig-correlation
+#| fig-cap: "Correlation matrix of numeric variables"
+
+# TODO: correlation matrix / correlation with TARGET_FLAG and TARGET_AMT
+```
+
+## Missing Data
+
+```{r missing-data}
+#| label: missing-data
+
+# TODO: count of missing values per variable
+```
+
+_Discuss what the exploration reveals: notable distributions, skew, outliers, class balance of
+`TARGET_FLAG`, the zero-inflated nature of `TARGET_AMT`, correlations, and variables needing
+imputation or cleanup (e.g., currency-formatted strings like `INCOME`, `HOME_VAL`, `BLUEBOOK`,
+`OLDCLAIM`)._
+
+# Data Preparation
+
+## Cleaning Currency and Categorical Fields
+
+```{r clean-fields}
+#| label: clean-fields
+
+# TODO: strip $ and , from currency fields (INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM) and coerce to numeric
+```
+
+## Missing Value Imputation
+
+_Describe the imputation strategy and, where relevant, add missingness flag variables._
+
+```{r impute}
+#| label: impute
+
+# TODO: missingness flags and imputation
+```
+
+## Feature Transformations
+
+_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for
+each._
+
+```{r transformations}
+#| label: transformations
+
+# TODO: bucketing, log/sqrt/Box-Cox transforms, derived variables
+```
+
+# Build Models
+
+## Logistic Regression Models (`TARGET_FLAG`)
+
+### Logistic Model 1
+
+_Describe the variable selection rationale for this model._
+
+```{r logit-1}
+#| label: logit-1
+
+# TODO: fit first logistic model
+```
+
+### Logistic Model 2
+
+```{r logit-2}
+#| label: logit-2
+
+# TODO: fit second logistic model
+```
+
+### Logistic Model 3
+
+```{r logit-3}
+#| label: logit-3
+
+# TODO: fit third logistic model
+```
+
+## Linear Regression Models (`TARGET_AMT`)
+
+_Note: `TARGET_AMT` is only meaningfully modeled for crash cases (`TARGET_FLAG == 1`); consider
+whether to filter to that subset._
+
+### Linear Model 1
+
+```{r lm-1}
+#| label: lm-1
+
+# TODO: fit first linear model
+```
+
+### Linear Model 2
+
+```{r lm-2}
+#| label: lm-2
+
+# TODO: fit second linear model
+```
+
+## Coefficient Discussion
+
+_Discuss whether coefficient signs and magnitudes make sense for both the logistic and linear
+models. Flag and discuss any counterintuitive coefficients and whether the variable is retained._
+
+# Select Models
+
+## Multicollinearity
+
+```{r vif}
+#| label: vif
+
+# TODO: variance inflation factors for logistic and linear models
+```
+
+## Logistic Model Evaluation
+
+```{r logit-eval}
+#| label: logit-eval
+
+# TODO: predicted probabilities/classes, confusion matrix, ROC/AUC
+```
+
+## Linear Model Evaluation
+
+```{r lm-eval}
+#| label: fig-lm-residuals
+#| fig-cap: "Residual diagnostics for the selected linear model"
+
+# TODO: residual diagnostic plots
+```
+
+## Final Model Selection
+
+_State which logistic model and which linear model are selected as final, and justify the choice
+against the criteria discussed above (AIC/log-likelihood/ROC-AUC for the logistic model;
+Adjusted R2/RMSE/residual behavior for the linear model; parsimony and interpretability for both)._
+
+# Predictions on Evaluation Data
+
+```{r predictions}
+#| label: predictions
+
+# TODO: apply the same preparation steps used on train to evaluation, then predict and write out
+```
+
+# Appendix: R Code
+
+_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
+additional content is needed here unless supplementary code is included._

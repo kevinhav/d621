@@ -1,0 +1,252 @@
+---
+title: "Homework #5: Count Regression -- Predicting Wine Case Sales"
+subtitle: "DATA 621 -- Business Analytics and Data Mining"
+author:
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronsteain
+  - name: Aaliyah John-Henry
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.5
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(MASS)
+library(pscl)
+library(car)
+
+theme_set(theme_minimal())
+```
+
+# Introduction
+
+In this assignment we build count regression models to predict `TARGET`, the number of sample
+cases of wine purchased by distributors, using the wine's chemical properties along with expert
+ratings and label appeal.
+
+# Data Exploration
+
+```{r load-data}
+#| label: load-data
+
+train <- read_csv("data/wine-training-data.csv")
+evaluation <- read_csv("data/wine-evaluation-data.csv")
+
+train <- train %>% select(-INDEX)
+```
+
+## Size and Structure
+
+```{r data-structure}
+#| label: data-structure
+
+# TODO: dim(), glimpse(), etc.
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+#| label: summary-stats
+
+# TODO: mean / sd / median summary table
+```
+
+## Distribution of the Target
+
+```{r target-distribution}
+#| label: fig-target-distribution
+#| fig-cap: "Distribution of TARGET (cases purchased)"
+
+# TODO: bar chart of TARGET; compare mean vs. variance to check Poisson dispersion assumption
+```
+
+## Distributions of Predictors
+
+```{r distributions}
+#| label: fig-distributions
+#| fig-cap: "Distributions of predictor variables"
+
+# TODO: histograms or density plots of predictor variables
+```
+
+## Correlation with Target
+
+```{r correlation}
+#| label: fig-correlation
+#| fig-cap: "Correlation matrix of all variables"
+
+# TODO: correlation matrix / correlation with TARGET
+```
+
+## Missing Data
+
+```{r missing-data}
+#| label: fig-missing
+#| fig-cap: "Proportion of missing values by variable"
+
+# TODO: count / proportion of missing values per variable
+```
+
+_Discuss what the exploration reveals: the shape and dispersion of `TARGET` relative to Poisson
+assumptions, notable predictor distributions, correlations with the target, and which variables
+have meaningful missingness (recall the hint that missingness itself, e.g. of `STARS`, may be
+predictive)._
+
+# Data Preparation
+
+## Missingness Flags and Imputation
+
+_Describe the imputation strategy. Given the assignment's hint, consider retaining a missingness
+flag for `STARS` (and any other variable) as a predictor in its own right rather than only
+imputing it away._
+
+```{r missing-flags-impute}
+#| label: missing-flags-impute
+
+# TODO: missingness flags and imputation
+```
+
+## Feature Transformations
+
+_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for
+each._
+
+```{r transformations}
+#| label: transformations
+
+# TODO: bucketing, log/sqrt/Box-Cox transforms, derived variables
+```
+
+# Build Models
+
+## Poisson Regression Models
+
+### Poisson Model 1
+
+_Describe the variable selection rationale for this model._
+
+```{r poisson-1}
+#| label: poisson-1
+
+# TODO: fit first Poisson model
+```
+
+### Poisson Model 2
+
+```{r poisson-2}
+#| label: poisson-2
+
+# TODO: fit second Poisson model
+```
+
+## Negative Binomial Regression Models
+
+### Negative Binomial Model 1
+
+```{r nb-1}
+#| label: nb-1
+
+# TODO: fit first negative binomial model
+```
+
+### Negative Binomial Model 2
+
+```{r nb-2}
+#| label: nb-2
+
+# TODO: fit second negative binomial model
+```
+
+## (Optional) Zero-Inflated Models
+
+```{r zero-inflated}
+#| label: zero-inflated
+
+# TODO: zero-inflated Poisson / negative binomial models, if pursued
+```
+
+## Multiple Linear Regression Models
+
+### Linear Model 1
+
+```{r lm-1}
+#| label: lm-1
+
+# TODO: fit first linear model
+```
+
+### Linear Model 2
+
+```{r lm-2}
+#| label: lm-2
+
+# TODO: fit second linear model
+```
+
+## Coefficient Discussion
+
+_Discuss whether coefficient signs and magnitudes make sense across model types (Poisson vs.
+negative binomial vs. linear), noting cases where the sign or magnitude of a predictor (e.g. `pH`)
+differs across models, per the assignment's example. Flag and discuss any counterintuitive
+coefficients and whether the variable is retained._
+
+# Select Models
+
+## Dispersion Check
+
+```{r dispersion-check}
+#| label: dispersion-check
+
+# TODO: likelihood ratio test comparing Poisson vs. negative binomial fit
+```
+
+## Multicollinearity
+
+```{r vif}
+#| label: vif
+
+# TODO: variance inflation factors
+```
+
+## Model Comparison
+
+```{r model-comparison}
+#| label: model-comparison
+
+# TODO: compare models on AIC, average squared error
+```
+
+## Final Model Selection
+
+_State which count regression model is selected as final and justify the choice against the
+criteria discussed above (AIC, average squared error, parsimony, interpretability). Note that a
+count regression model must be selected for deployment even if a linear model performs
+comparably or better._
+
+# Predictions on Evaluation Data
+
+```{r predictions}
+#| label: predictions
+
+# TODO: apply the same preparation steps used on train to evaluation, then predict and write out
+```
+
+# Appendix: R Code
+
+_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
+additional content is needed here unless supplementary code is included._
