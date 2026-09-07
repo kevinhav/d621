@@ -30,6 +30,7 @@ library(mice)
 library(car)
 library(caret)
 
+
 theme_set(theme_minimal())
 ```
 
@@ -41,47 +42,82 @@ pitching, and fielding statistics adjusted to a 162 game season.
 
 # Data Exploration
 
+We first load both data sets. We will drop the index to ensure we do not accidentally use it in our feature set. 
+
 ```{r load-data}
 #| label: load-data
 
-train <- read_csv("data/moneyball-training-data.csv")
-evaluation <- read_csv("data/moneyball-evaluation-data.csv")
+train <- read_csv("hw1/data/moneyball-training-data.csv")
+evaluation <- read_csv("hw1/data/moneyball-evaluation-data.csv")
 
 train <- train %>% select(-INDEX)
 ```
 
 ## Size and Structure
 
+We have a ~2,000 row data set with 16 columns, including our target variable. We immediately notice a high number of missing values in `TEAM_BATTING_HBP` - we wil want to investigate this.
+
 ```{r data-structure}
 #| label: data-structure
 
-# TODO: dim(), glimpse(), etc.
+glimpse(train)
 ```
 
 ## Summary Statistics
 
+It is often useful to check a summary of descriptive statistics on the data set to get a initial understanding of the data. We're looking for things like high standard deviations, large differences between means and medians (indicating skew), or another anomalous points.
+
 ```{r summary-stats}
 #| label: summary-stats
 
-# TODO: mean / sd / median summary table
+describe(train)
 ```
 
+With this quick glance, we make the below observations; we'll keep this in mind later when we decide what transformations are necessary to appropriately scale the data.
+
+- The variables throughout this dataset have different orders of magnitude
+- Most variables are complete (non-null) with the exceptions of `TEAM_BASERUN_SB`, `TEAM_BASERUN SO`,`TEAM_BASERUN_CS`, `TEAM_BATTING_HBP`, and `TEAM_PITCHING_SO`.
+- We see a very high degree of skew in `TEAM_PITCHING_H` and `TEAM_PITCHING_SO`
+- We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero
+
 ## Distributions
+
+Summary statistics will highlight unusual numbers, but visualizing the distributions will allow us to intuit the shape of the variables.
+
+Since these are all continuous quantitative numbers, we visualize all of them as KDE plots.
 
 ```{r distributions}
 #| label: fig-distributions
 #| fig-cap: "Distributions of predictor and target variables"
 
-# TODO: histograms or density plots of each variable
+# Pivot into long format to make it easier to vizualize
+train_long <- pivot_longer(
+  train,
+  cols = where(is.numeric),   
+  names_to = "variable",      
+  values_to = "value"         
+)
+
+ggplot(train_long, aes(x = value)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title='Variable Distributions') +
+  theme_minimal(base_size = 12)
 ```
 
 ## Boxplots
+
+Boxplots allow us to more easily spot outliers. 
 
 ```{r boxplots}
 #| label: fig-boxplots
 #| fig-cap: "Boxplots of predictor and target variables"
 
-# TODO: boxplots of each variable
+ggplot(train_long, aes(x = "", y = value)) +
+  geom_boxplot(fill = "#3a86d4", colour = "black", outlier.colour = "black", linewidth = 0.4) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = NULL, title = 'Variable Distributions') +
+  theme_minimal(base_size = 12)
 ```
 
 ## Correlation with Target
@@ -89,22 +125,61 @@ train <- train %>% select(-INDEX)
 ```{r correlation}
 #| label: fig-correlation
 #| fig-cap: "Correlation matrix of all variables"
+#| fig-width: 12
+#| fig-height: 12
 
-# TODO: correlation matrix / correlation with TARGET_WINS
+# Convert to raw matrix first
+cor_matrix <- train %>%
+  select(where(is.numeric)) %>%
+  cor(use = "pairwise.complete.obs")
+
+# Then we can plot the corr plot
+corrplot(cor_matrix,
+         method = "color",
+         type = "lower",
+         order = "hclust",
+         addCoef.col = "black",
+         number.cex = 0.6,
+         tl.col = "black",
+         tl.cex = 0.6,
+         tl.srt = 45,
+         diag = FALSE)
 ```
 
 ## Missing Data
+
+Missing data is critical to handle in any machine learning task. We made observations on specific variables earlier, but here we can visualize the proporption of missingness.
 
 ```{r missing-data}
 #| label: fig-missing
 #| fig-cap: "Count and proportion of missing values by variable"
 
-# TODO: count / proportion of missing values per variable
+missing_props <- train_long %>%
+  group_by(variable) %>%
+  summarise(
+    proportion_missing = mean(is.na(value)),
+    .groups = "drop"
+  )
+
+ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
+                          y = proportion_missing)) +
+  geom_col(fill = "#3a86d4") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Proportion missing", title="Missing Data by Variable") +
+  theme_minimal(base_size = 12)
 ```
 
 _Discuss what the exploration reveals: notable distributions, skew, outliers, correlations with
 `TARGET_WINS`, multicollinearity among predictors, and which variables have meaningful amounts of
 missing data._
+
+Our exploratory data analysis has revealed some key insights on this dataset that we must address in our modeling, especially to ensure the assumptions of linear regression are met.
+
+- Null values in multiple columns will need to be addressed by imputation or removal
+- Variables with high skewness will require mathematical transformations
+- Outliers should be handled appropriately, either by removal or transformation
+- Highly correlated variables should be considered for removal to avoid multicollinearity issues in the model
 
 # Data Preparation
 
