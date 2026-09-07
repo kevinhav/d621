@@ -1,0 +1,28 @@
+# R
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+
+# renv (renv/library, renv/local, etc. are already ignored by renv/.gitignore --
+# renv.lock itself IS tracked, do not ignore it)
+
+# Quarto / R Markdown render artifacts
+.quarto/
+*_files/
+*_cache/
+*.html
+
+# Rendered output (share these directly, not through git, unless you want
+# them versioned -- uncomment to track PDFs instead)
+# *.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*~
