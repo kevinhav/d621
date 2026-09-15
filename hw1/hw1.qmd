@@ -29,6 +29,7 @@ library(psych)
 library(mice)
 library(car)
 library(caret)
+library(VIM)
 
 
 theme_set(theme_minimal())
@@ -170,9 +171,6 @@ ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
   theme_minimal(base_size = 12)
 ```
 
-_Discuss what the exploration reveals: notable distributions, skew, outliers, correlations with
-`TARGET_WINS`, multicollinearity among predictors, and which variables have meaningful amounts of
-missing data._
 
 Our exploratory data analysis has revealed some key insights on this dataset that we must address in our modeling, especially to ensure the assumptions of linear regression are met.
 
@@ -185,30 +183,78 @@ Our exploratory data analysis has revealed some key insights on this dataset tha
 
 ## Missing Value Imputation
 
-_Describe the imputation strategy (e.g., median imputation, or multiple imputation via `mice`)
-and, where relevant, add missingness flag variables._
+We must now address our strategy for handling missing values.
 
-```{r missing-flags}
-#| label: missing-flags
+- `TEAM_BATTING_HBP` has the highest proportion of nulls, but the distribution is normally distributed; imputing with the mean makes the most sense
+  - We should address that `TEAM_BATTING_HBP` is significantly null (over 70%) and has a low correlation with the target variable, so we may consider dropping it from the model entirely when we get to feature selection
+- `TEAM_BASERUN_CS` has a high degree of right-skew, so we will impute with the median, which is less sensitive to outliers
+- `TEAM_BASERUN_SB` is slightly skewed so we will again impute with the median
+- `TEAM_PITCHING_SO` has some extreme outliers but is otherwise normally distributed and centered, so we will impute with the mean
+- `TEAM_BATTING_SO` has dual modes, so we will use k-nearest neighbors imputation to fill in the missing values, which will take into account the other variables in the dataset.
 
-# TODO: create missingness flag variables
-```
 
 ```{r impute}
 #| label: impute
 
-# TODO: impute missing values
+train_imputed <- train |>
+  mutate(
+    TEAM_BATTING_HBP = ifelse(
+      is.na(TEAM_BATTING_HBP),
+      mean(TEAM_BATTING_HBP, na.rm = TRUE),
+      TEAM_BATTING_HBP
+    ),
+    TEAM_BASERUN_CS = ifelse(
+      is.na(TEAM_BASERUN_CS),
+      median(TEAM_BASERUN_CS, na.rm = TRUE),
+      TEAM_BASERUN_CS
+    ),
+    TEAM_BASERUN_SB = ifelse(
+      is.na(TEAM_BASERUN_SB),
+      median(TEAM_BASERUN_SB, na.rm = TRUE),
+      TEAM_BASERUN_SB
+    ),
+    TEAM_PITCHING_SO = ifelse(
+      is.na(TEAM_PITCHING_SO),
+      mean(TEAM_PITCHING_SO, na.rm = TRUE),
+      TEAM_PITCHING_SO
+    )
+  )
+
+train_imputed <- train_imputed  |>
+  VIM::kNN(variable = "TEAM_BATTING_SO", k = 5, imp_var = FALSE)
 ```
 
 ## Feature Transformations
 
-_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived ratio/combination variables and
-the rationale for each._
+Now we address any non-linear relationships between our features and our target variable. The easiest way to do this is to visualize the relationship between each predictor and the target variable. A combination of the distribution plots and scatterplots w.r.t the target variable will help us identify which variables may require transformation.
+
+```{r}
+#| label: fig-transformations
+#| fig-cap: "Scatterplots of predictor variables against target variable"
+
+# Facet wrap scatterplots of each predictor against the target variable
+train_long_no_target <- train_imputed |>
+  pivot_longer(cols = -TARGET_WINS, names_to = "variable", values_to = "value")
+
+ggplot(train_long_no_target, aes(x = value, y = TARGET_WINS)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y ="TARGET_WINS", title = "Scatterplots of Predictor Variables vs Target Variable") +
+  theme_minimal(base_size = 12)
+
+```
+
+This gives us a better picture of what variables may required transformation to better fit our linear model. We will break it down by **Outliers**, **Skewness**, and **Non-linear relationships**.
+
+- Outliers: `TEAM_PITCHING_H`, `TEAM_PITCHING_SO`, and `TEAM_PITCHING_BB` have extreme outliers that will need to be addressed. 
+- Skewness: Besides outliers, most variables are approximately normally distributed. For now we will leave them as-is to prefer simplicity in our model.
+- Non-linear relationships: Our scatterplot does not show any obvious non-linear relationships, but given `TEAM_FIELDING_E` has a long tail, and we see a slight curve in the scatterplot, we may consider a log transformation to see if it improves the linearity of the relationship.
+
 
 ```{r transformations}
 #| label: transformations
 
-# TODO: bucketing, log/sqrt/Box-Cox transforms, derived/combined variables
+
 ```
 
 ## Prepared Data Summary
