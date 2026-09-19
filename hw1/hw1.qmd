@@ -57,11 +57,10 @@ train <- train %>% select(-INDEX)
 
 ## Size and Structure
 
-We have a ~2,000 row data set with 16 columns, including our target variable. We immediately notice a high number of missing values in `TEAM_BATTING_HBP` - we wil want to investigate this.
+We have a ~2,000 row data set with 16 columns, including our target variable. We immediately notice a high number of missing values in `TEAM_BATTING_HBP` - we will want to investigate this.
 
 ```{r data-structure}
 #| label: data-structure
-
 glimpse(train)
 ```
 
@@ -82,8 +81,8 @@ With this quick glance, we make the below observations; we'll keep this in mind 
 - We see a very high degree of skew in `TEAM_PITCHING_H` and `TEAM_PITCHING_SO`
 - We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero 
 
-(It seems unrealistic that any values be 0 over a full season. I believe these should be treated as missing values.)
-(I also think that some of the maximum values are extremely high and are thus typos. For example, `TEAM_PITCHING_H` and `TEAM_PITCHING_SO` both exceeding 10,000.)
+<!-- (It seems unrealistic that any values be 0 over a full season. I believe these should be treated as missing values.)
+(I also think that some of the maximum values are extremely high and are thus typos. For example, `TEAM_PITCHING_H` and `TEAM_PITCHING_SO` both exceeding 10,000.) -->
 
 ## Distributions
 
@@ -189,7 +188,7 @@ Our exploratory data analysis has revealed some key insights on this dataset tha
 
 We must now address our strategy for handling missing values.
 
-- `TEAM_BATTING_HBP` has the highest proportion of nulls, but the distribution is normally distributed; imputing with the mean makes the most sense
+- `TEAM_BATTING_HBP` is almost always null; any imputation we perform will skew the entire feature to that imputation. We will simply drop it, as it's >90% null.
   - We should address that `TEAM_BATTING_HBP` is significantly null (over 70%) and has a low correlation with the target variable, so we may consider dropping it from the model entirely when we get to feature selection
 - `TEAM_BASERUN_CS` has a high degree of right-skew, so we will impute with the median, which is less sensitive to outliers
 - `TEAM_BASERUN_SB` is slightly skewed so we will again impute with the median
@@ -203,11 +202,6 @@ We must now address our strategy for handling missing values.
 
 train_imputed <- train |>
   mutate(
-    TEAM_BATTING_HBP = ifelse(
-      is.na(TEAM_BATTING_HBP),
-      mean(TEAM_BATTING_HBP, na.rm = TRUE),
-      TEAM_BATTING_HBP
-    ),
     TEAM_BASERUN_CS = ifelse(
       is.na(TEAM_BASERUN_CS),
       median(TEAM_BASERUN_CS, na.rm = TRUE),
@@ -232,6 +226,10 @@ train_imputed <- train |>
 
 train_imputed <- train_imputed  |>
   VIM::kNN(variable = "TEAM_BATTING_SO", k = 5, imp_var = FALSE)
+
+# drop TEAM_BATTING_HBP since it is almost always null
+train_imputed <- train_imputed |>
+  select(-TEAM_BATTING_HBP)
 ```
 
 ```{r}
@@ -241,7 +239,7 @@ is.na(train_imputed) |> sum()
 
 ## Feature Transformations
 
-Now we address any non-linear relationships between our features and our target variable. The easiest way to do this is to visualize the relationship between each predictor and the target variable. A combination of the distribution plots and scatterplots w.r.t the target variable will help us identify which variables may require transformation.
+Now we address any non-linear relationships and/or outliers in our features and our target variable. The easiest way to do this is to visualize the relationship between each predictor and the target variable. A combination of the distribution plots and scatterplots w.r.t the target variable will help us identify which variables may require transformation.
 
 ```{r}
 #| label: fig-transformations
@@ -268,8 +266,29 @@ This gives us a better picture of what variables may required transformation to 
 
 ```{r transformations}
 #| label: transformations
-# TODO 
-train_transformed <- train_imputed
+train_transformed <- train_imputed  |> 
+  mutate(
+    # Log transform TEAM_FIELDING_E to reduce skew and improve linearity
+    TEAM_FIELDING_E = log(TEAM_FIELDING_E + 1),
+
+    # Cap outliers to three standard deviations from the mean for
+    # TEAM_PITCHING_H, TEAM_PITCHING_SO, and TEAM_PITCHING_BB
+    TEAM_PITCHING_H = ifelse(
+      TEAM_PITCHING_H > mean(TEAM_PITCHING_H) + 3 * sd(TEAM_PITCHING_H),
+      mean(TEAM_PITCHING_H) + 3 * sd(TEAM_PITCHING_H),
+      TEAM_PITCHING_H
+    ),
+    TEAM_PITCHING_SO = ifelse(
+      TEAM_PITCHING_SO > mean(TEAM_PITCHING_SO) + 3 * sd(TEAM_PITCHING_SO),
+      mean(TEAM_PITCHING_SO) + 3 * sd(TEAM_PITCHING_SO),
+      TEAM_PITCHING_SO
+    ),
+    TEAM_PITCHING_BB = ifelse(
+      TEAM_PITCHING_BB > mean(TEAM_PITCHING_BB) + 3 * sd(TEAM_PITCHING_BB),
+      mean(TEAM_PITCHING_BB) + 3 * sd(TEAM_PITCHING_BB),
+      TEAM_PITCHING_BB
+    )
+  )
 
 ```
 
@@ -282,13 +301,25 @@ head(train_transformed)  |> kable() |> kable_styling(full_width = FALSE, positio
 
 ```
 
+```{r}
+# Facet wrap scatterplots of each predictor against the target variable
+train_transform_long_no_target <- train_transform |>
+  pivot_longer(cols = -TARGET_WINS, names_to = "variable", values_to = "value")
+
+ggplot(train_transform_long_no_target, aes(x = value, y = TARGET_WINS)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y ="TARGET_WINS", title = "Scatterplots of Predictor Variables vs Target Variable") +
+  theme_minimal(base_size = 12)
+```
+
 # Build Models
 
 ## Model 1
 
 A simple linear model is always a good starting point. Even if it is not a good model, it gives us a baseline to compare against other models. We will use all predictors in this model, on the entire dataset, double check the as`sumptions of linear regression, and evaluate the model performance.
 
-We should also be mindful of the base rate of wins in the dataset. The mean wins is 80.79 with a $\pm$ 10.5 standard deviation. This means that a naive model that predicts the mean for all teams would have an RMSE of 10.5. Any model we build should be able to beat this baseline.
+We should also be mindful of the base rate of wins in the dataset. The mean wins is 80.79 with a $\pm$ 15.7 standard deviation. This means that a naive model that predicts the mean for all teams would have an RMSE of 15.7. Any model we build should be able to beat this baseline.
 
 ```{r}
 #| label: baseline-stats
@@ -309,21 +340,43 @@ plot(lm_all_feat)
 
 Let's start with the plot. We see that our residuals vs fitted values is quite close to a horizontal line, which indicates our model is not biased. The Q-Q residuals tells us "how normally distributed are our residuals?", with the diagonal dotted line representing a perfect normal distribution. We see that our residuals are not perfectly normal, but they are close enough to be acceptable (some deviation at the tails is expected for a real world dataset).
 
-Now, reviewing the model summary, we see our adjusted R2 value is 0.3146, which is not an impressive model. This means only 31.46% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is worse than the baseline of 10.5. 
+Now, reviewing the model summary, we see our adjusted R2 value is 0.3146, which is not an impressive model. This means only 31.46% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is improved over the baseline of 15.7. 
 
-In summary, this basic linear model with all features is not a good model. Predicting the mean is a better baseline than this model. We will need to do some feature selection and transformation to improve our model performance.
+In summary, this basic linear model with all features is not a good model. While it is slightly better than the naive mean model, we should explore further to find a better model.
 
-Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_BB`, `TEAM_PITCHING_HR`, and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We will consider removing these features in our next model.
+Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_BB`, `TEAM_PITCHING_HR`, and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We'll take a look at this next.
 
 ## Model 2
 
-_Describe the variable selection rationale for this model (e.g., transformed variables, subset of
-predictors)._
+Let's consider pruning our feature set for our second model. If we review the earlier correlation plot, we see that `TEAM_BATTING_HR` and `TEAM_PITCHING_HR` are very highly correlated at 97%. These features encode the same information, so we will drop them.
+
+Evaluating pair-wise correlations is a good first step, but a more robust way to evaluate multicollinearity is to calculate the variance inflation factor (VIF) for each feature. A VIF value greater than 5 indicates a high degree of multicollinearity, and a value greater than 10 indicates a very high degree of multicollinearity.
+
+We now calculate VIF for our first model to see if any features have a high degree of multicollinearity.
+
+```{r vif-model1}
+#| label: vif-model1
+vif(lm_all_feat)
+```
+
+As expected, the home run features have a very high VIF, indicating they are highly collinear. We also see that `TEAM_PITCHING_BB` and `TEAM_BATTING_BB` have a similar relationship with a VIF > 5, so we will drop `TEAM_PITCHING_BB`  and `TEAM_PITCHING_HR` from our second model.
+
+```{r}
+#| label: model-2-pruning
+# Prune features for model 2
+train_pruned <- train_transformed |>
+  select(-TEAM_PITCHING_BB, -TEAM_PITCHING_HR, -TEAM_BATTING_HR)
+```
+
+Let's now fit our second model with the pruned feature set and evaluate the results.
 
 ```{r model-2}
 #| label: model-2
+lm_pruned <- lm(TARGET_WINS ~ ., data = train_pruned)
 
-# TODO: fit second model
+summary(lm_pruned)
+plot(lm_pruned)
+
 ```
 
 ## Model 3
