@@ -79,7 +79,10 @@ With this quick glance, we make the below observations; we'll keep this in mind 
 - The variables throughout this dataset have different orders of magnitude
 - Most variables are complete (non-null) with the exceptions of `TEAM_BASERUN_SB`, `TEAM_BASERUN SO`,`TEAM_BASERUN_CS`, `TEAM_BATTING_HBP`, and `TEAM_PITCHING_SO`.
 - We see a very high degree of skew in `TEAM_PITCHING_H` and `TEAM_PITCHING_SO`
-- We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero
+- We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero 
+
+(It seems unrealistic that any values be 0 over a full season. I believe these should be treated as missing values.)
+(I also think that some of the maximum values are extremely high and are thus typos. For example, `TEAM_PITCHING_H` and `TEAM_PITCHING_SO` both exceeding 10,000.)
 
 ## Distributions
 
