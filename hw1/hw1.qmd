@@ -30,6 +30,7 @@ library(mice)
 library(car)
 library(caret)
 library(VIM)
+library(kableExtra)
 
 
 theme_set(theme_minimal())
@@ -194,6 +195,7 @@ We must now address our strategy for handling missing values.
 - `TEAM_BASERUN_SB` is slightly skewed so we will again impute with the median
 - `TEAM_PITCHING_SO` has some extreme outliers but is otherwise normally distributed and centered, so we will impute with the mean
 - `TEAM_BATTING_SO` has dual modes, so we will use k-nearest neighbors imputation to fill in the missing values, which will take into account the other variables in the dataset.
+- `TEAM_FIELDING_DP` has a small number of missing values, so we will impute with the mean given the roughly normal distribution.
 
 
 ```{r impute}
@@ -220,11 +222,21 @@ train_imputed <- train |>
       is.na(TEAM_PITCHING_SO),
       mean(TEAM_PITCHING_SO, na.rm = TRUE),
       TEAM_PITCHING_SO
+    ),
+    TEAM_FIELDING_DP = ifelse(
+      is.na(TEAM_FIELDING_DP),
+      mean(TEAM_FIELDING_DP, na.rm = TRUE),
+      TEAM_FIELDING_DP
     )
   )
 
 train_imputed <- train_imputed  |>
   VIM::kNN(variable = "TEAM_BATTING_SO", k = 5, imp_var = FALSE)
+```
+
+```{r}
+# Confirm that there are no more missing values
+is.na(train_imputed) |> sum()
 ```
 
 ## Feature Transformations
@@ -256,7 +268,8 @@ This gives us a better picture of what variables may required transformation to 
 
 ```{r transformations}
 #| label: transformations
-
+# TODO 
+train_transformed <- train_imputed
 
 ```
 
@@ -265,20 +278,42 @@ This gives us a better picture of what variables may required transformation to 
 ```{r prepared-summary}
 #| label: prepared-summary
 
-# TODO: summarize the prepared data set
+head(train_transformed)  |> kable() |> kable_styling(full_width = FALSE, position = "center")
+
 ```
 
 # Build Models
 
 ## Model 1
 
-_Describe the variable selection rationale for this model._
+A simple linear model is always a good starting point. Even if it is not a good model, it gives us a baseline to compare against other models. We will use all predictors in this model, on the entire dataset, double check the as`sumptions of linear regression, and evaluate the model performance.
+
+We should also be mindful of the base rate of wins in the dataset. The mean wins is 80.79 with a $\pm$ 10.5 standard deviation. This means that a naive model that predicts the mean for all teams would have an RMSE of 10.5. Any model we build should be able to beat this baseline.
+
+```{r}
+#| label: baseline-stats
+# Mean and standard deviation of TARGET_WINS
+train_transformed %>% summarise(mean_wins = mean(TARGET_WINS), sd_wins = sd(TARGET_WINS))
+
+```
 
 ```{r model-1}
-#| label: model-1
+#| label: all-features-model
 
-# TODO: fit first model
+lm_all_feat <- lm(TARGET_WINS ~ ., data = train_transformed)
+summary(lm_all_feat)
+# Plot residuals
+par(mfrow = c(2, 2))
+plot(lm_all_feat)
 ```
+
+Let's start with the plot. We see that our residuals vs fitted values is quite close to a horizontal line, which indicates our model is not biased. The Q-Q residuals tells us "how normally distributed are our residuals?", with the diagonal dotted line representing a perfect normal distribution. We see that our residuals are not perfectly normal, but they are close enough to be acceptable (some deviation at the tails is expected for a real world dataset).
+
+Now, reviewing the model summary, we see our adjusted R2 value is 0.3146, which is not an impressive model. This means only 31.46% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is worse than the baseline of 10.5. 
+
+In summary, this basic linear model with all features is not a good model. Predicting the mean is a better baseline than this model. We will need to do some feature selection and transformation to improve our model performance.
+
+Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_BB`, `TEAM_PITCHING_HR`, and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We will consider removing these features in our next model.
 
 ## Model 2
 
