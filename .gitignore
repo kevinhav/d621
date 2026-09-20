@@ -16,7 +16,7 @@
 
 # Rendered output (share these directly, not through git, unless you want
 # them versioned -- uncomment to track PDFs instead)
-# *.pdf
+*.pdf
 
 # OS
 .DS_Store
