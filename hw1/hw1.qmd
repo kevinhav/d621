@@ -4,7 +4,7 @@ subtitle: "DATA 621 -- Business Analytics and Data Mining"
 author:
   - name: Kevin Havis
   - name: Michael Drake
-  - name: Rebecca Bronsteain
+  - name: Rebecca Bronstein
   - name: Aaliyah John-Harry
 date: today
 format:
