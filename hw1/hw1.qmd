@@ -19,7 +19,7 @@ execute:
   message: false
 ---
 
-```{r setup}
+```{r}
 #| label: setup
 #| include: false
 
@@ -44,34 +44,44 @@ pitching, and fielding statistics adjusted to a 162 game season.
 
 # Data Exploration
 
-We first load both data sets. We will drop the index to ensure we do not accidentally use it in our feature set. 
+We first load both data sets. We will drop the index to ensure we do not accidentally use it in our feature set. The goal of data exploration is to inform ourselves of the characteristics of the particular dataset, discover important relationships, and get a general idea of what preprocessing steps may be necessary.
 
-```{r load-data}
+```{r}
 #| label: load-data
 
-train <- read_csv("hw1/data/moneyball-training-data.csv")
-evaluation <- read_csv("hw1/data/moneyball-evaluation-data.csv")
+train <- read_csv("data/moneyball-training-data.csv")
+evaluation <- read_csv("data/moneyball-evaluation-data.csv")
 
-train <- train %>% select(-INDEX)
+train <- train |> select(-INDEX)
 ```
 
 ## Size and Structure
 
 We have a ~2,000 row data set with 16 columns, including our target variable. We immediately notice a high number of missing values in `TEAM_BATTING_HBP` - we will want to investigate this.
 
-```{r data-structure}
+```{r}
 #| label: data-structure
-glimpse(train)
+
+tibble(
+  Variable = names(train),
+  Type     = map_chr(train, ~ class(.x)[1]),
+  Example  = map_chr(train, ~ paste(head(.x, 3), collapse = ", "))
+) |>
+  kable()
 ```
 
 ## Summary Statistics
 
 It is often useful to check a summary of descriptive statistics on the data set to get a initial understanding of the data. We're looking for things like high standard deviations, large differences between means and medians (indicating skew), or another anomalous points.
 
-```{r summary-stats}
+```{r}
 #| label: summary-stats
 
-describe(train)
+describe(train) |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  select(Variable, mean, sd, median, se) |>
+  kable(digits = 2)
 ```
 
 With this quick glance, we make the below observations; we'll keep this in mind later when we decide what transformations are necessary to appropriately scale the data.
@@ -90,7 +100,9 @@ Summary statistics will highlight unusual numbers, but visualizing the distribut
 
 Since these are all continuous quantitative numbers, we visualize all of them as KDE plots.
 
-```{r distributions}
+Our goal here is to identify any potential skewed variables, or otherwise unusual distributions.
+
+```{r}
 #| label: fig-distributions
 #| fig-cap: "Distributions of predictor and target variables"
 
@@ -105,36 +117,41 @@ train_long <- pivot_longer(
 ggplot(train_long, aes(x = value)) +
   geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
   facet_wrap(~ variable, scales = "free") +
-  labs(x = NULL, y = "Count", title='Variable Distributions') +
-  theme_minimal(base_size = 12)
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
 ```
 
 ## Boxplots
 
-Boxplots allow us to more easily spot outliers. 
+Boxplots allow us to more easily spot outliers as distinct points, and is a good visual to pair with distribution plots.
 
-```{r boxplots}
+```{r}
 #| label: fig-boxplots
 #| fig-cap: "Boxplots of predictor and target variables"
 
 ggplot(train_long, aes(x = "", y = value)) +
-  geom_boxplot(fill = "#3a86d4", colour = "black", outlier.colour = "black", linewidth = 0.4) +
+  geom_boxplot(
+    fill = "#3a86d4", colour = "black",
+    outlier.colour = "black", linewidth = 0.4
+  ) +
   facet_wrap(~ variable, scales = "free") +
-  labs(x = NULL, y = NULL, title = 'Variable Distributions') +
-  theme_minimal(base_size = 12)
+  labs(x = NULL, y = NULL, title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
 ```
 
 ## Correlation with Target
 
-```{r correlation}
+Of course, we would like to know what features are correlated with our target variable. A quick look here will help us plan our feature selection.
+
+```{r}
 #| label: fig-correlation
 #| fig-cap: "Correlation matrix of all variables"
 #| fig-width: 12
 #| fig-height: 12
 
 # Convert to raw matrix first
-cor_matrix <- train %>%
-  select(where(is.numeric)) %>%
+cor_matrix <- train |>
+  select(where(is.numeric)) |>
   cor(use = "pairwise.complete.obs")
 
 # Then we can plot the corr plot
@@ -154,12 +171,12 @@ corrplot(cor_matrix,
 
 Missing data is critical to handle in any machine learning task. We made observations on specific variables earlier, but here we can visualize the proporption of missingness.
 
-```{r missing-data}
+```{r}
 #| label: fig-missing
 #| fig-cap: "Count and proportion of missing values by variable"
 
-missing_props <- train_long %>%
-  group_by(variable) %>%
+missing_props <- train_long |>
+  group_by(variable) |>
   summarise(
     proportion_missing = mean(is.na(value)),
     .groups = "drop"
@@ -170,7 +187,7 @@ ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
   geom_col(fill = "#3a86d4") +
   coord_flip() +
   scale_y_continuous(labels = scales::percent) +
-  labs(x = NULL, y = "Proportion missing", title="Missing Data by Variable") +
+  labs(x = NULL, y = "Proportion missing", title = "Missing Data by Variable") +
   theme_minimal(base_size = 12)
 ```
 
@@ -197,7 +214,7 @@ We must now address our strategy for handling missing values.
 - `TEAM_FIELDING_DP` has a small number of missing values, so we will impute with the mean given the roughly normal distribution.
 
 
-```{r impute}
+```{r}
 #| label: impute
 
 train_imputed <- train |>
@@ -233,8 +250,10 @@ train_imputed <- train_imputed |>
 ```
 
 ```{r}
+#| label: confirm-missing
+
 # Confirm that there are no more missing values
-is.na(train_imputed) |> sum()
+cat("Remaining missing values:", is.na(train_imputed) |> sum())
 ```
 
 ## Feature Transformations
@@ -246,15 +265,20 @@ Now we address any non-linear relationships and/or outliers in our features and 
 #| fig-cap: "Scatterplots of predictor variables against target variable"
 
 # Facet wrap scatterplots of each predictor against the target variable
-train_long_no_target <- train_imputed |>
-  pivot_longer(cols = -TARGET_WINS, names_to = "variable", values_to = "value")
+plot_predictors_vs_target <- function(df, title) {
+  df |>
+    pivot_longer(cols = -TARGET_WINS, names_to = "variable", values_to = "value") |>
+    ggplot(aes(x = value, y = TARGET_WINS)) +
+    geom_point(alpha = 0.5) +
+    facet_wrap(~ variable, scales = "free") +
+    labs(x = NULL, y = "TARGET_WINS", title = title) +
+    theme_minimal(base_size = 12)
+}
 
-ggplot(train_long_no_target, aes(x = value, y = TARGET_WINS)) +
-  geom_point(alpha = 0.5) +
-  facet_wrap(~ variable, scales = "free") +
-  labs(x = NULL, y ="TARGET_WINS", title = "Scatterplots of Predictor Variables vs Target Variable") +
-  theme_minimal(base_size = 12)
-
+plot_predictors_vs_target(
+  train_imputed,
+  "Scatterplots of Predictor Variables vs Target Variable"
+)
 ```
 
 This gives us a better picture of what variables may required transformation to better fit our linear model. We will break it down by **Outliers**, **Skewness**, and **Non-linear relationships**.
@@ -264,58 +288,43 @@ This gives us a better picture of what variables may required transformation to 
 - Non-linear relationships: Our scatterplot does not show any obvious non-linear relationships, but given `TEAM_FIELDING_E` has a long tail, and we see a slight curve in the scatterplot, we may consider a log transformation to see if it improves the linearity of the relationship.
 
 
-```{r transformations}
+```{r}
 #| label: transformations
-train_transformed <- train_imputed  |> 
+
+# Cap values that exceed `threshold` (default: 3 SD above the mean of x itself,
+# or pass a threshold learned from a reference set, e.g. a training split)
+cap_outliers <- function(x, threshold = mean(x) + 3 * sd(x)) {
+  pmin(x, threshold)
+}
+
+train_transformed <- train_imputed |>
   mutate(
     # Log transform TEAM_FIELDING_E to reduce skew and improve linearity
     TEAM_FIELDING_E = log(TEAM_FIELDING_E + 1),
 
     # Cap outliers to three standard deviations from the mean for
     # TEAM_PITCHING_H, TEAM_PITCHING_SO, and TEAM_PITCHING_BB
-    TEAM_PITCHING_H = ifelse(
-      TEAM_PITCHING_H > mean(TEAM_PITCHING_H) + 3 * sd(TEAM_PITCHING_H),
-      mean(TEAM_PITCHING_H) + 3 * sd(TEAM_PITCHING_H),
-      TEAM_PITCHING_H
-    ),
-    TEAM_PITCHING_SO = ifelse(
-      TEAM_PITCHING_SO > mean(TEAM_PITCHING_SO) + 3 * sd(TEAM_PITCHING_SO),
-      mean(TEAM_PITCHING_SO) + 3 * sd(TEAM_PITCHING_SO),
-      TEAM_PITCHING_SO
-    ),
-    TEAM_PITCHING_BB = ifelse(
-      TEAM_PITCHING_BB > mean(TEAM_PITCHING_BB) + 3 * sd(TEAM_PITCHING_BB),
-      mean(TEAM_PITCHING_BB) + 3 * sd(TEAM_PITCHING_BB),
-      TEAM_PITCHING_BB
-    )
+    TEAM_PITCHING_H  = cap_outliers(TEAM_PITCHING_H),
+    TEAM_PITCHING_SO = cap_outliers(TEAM_PITCHING_SO),
+    TEAM_PITCHING_BB = cap_outliers(TEAM_PITCHING_BB)
   )
-
 ```
 
 ## Prepared Data Summary
 
-```{r prepared-summary}
-#| label: prepared-summary
-
-head(train_transformed)  |> kable() |> kable_styling(full_width = FALSE, position = "center")
-
-```
-
 ```{r}
-# Facet wrap scatterplots of each predictor against the target variable
-train_transform_long_no_target <- train_transform |>
-  pivot_longer(cols = -TARGET_WINS, names_to = "variable", values_to = "value")
+#| label: fig-transformed-scatter
+#| fig-cap: "Scatterplots of predictor variables vs target, post-transformation"
 
-ggplot(train_transform_long_no_target, aes(x = value, y = TARGET_WINS)) +
-  geom_point(alpha = 0.5) +
-  facet_wrap(~ variable, scales = "free") +
-  labs(x = NULL, y ="TARGET_WINS", title = "Scatterplots of Predictor Variables vs Target Variable") +
-  theme_minimal(base_size = 12)
+plot_predictors_vs_target(
+  train_transformed,
+  "Scatterplots of Predictor Variables vs Target Variable (Transformed)"
+)
 ```
 
 # Build Models
 
-## Model 1
+## Model 1 - Baseline
 
 A simple linear model is always a good starting point. Even if it is not a good model, it gives us a baseline to compare against other models. We will use all predictors in this model, on the entire dataset, double check the as`sumptions of linear regression, and evaluate the model performance.
 
@@ -323,13 +332,15 @@ We should also be mindful of the base rate of wins in the dataset. The mean wins
 
 ```{r}
 #| label: baseline-stats
-# Mean and standard deviation of TARGET_WINS
-train_transformed %>% summarise(mean_wins = mean(TARGET_WINS), sd_wins = sd(TARGET_WINS))
 
+# Mean and standard deviation of TARGET_WINS
+train_transformed |>
+  summarise(mean_wins = mean(TARGET_WINS), sd_wins = sd(TARGET_WINS)) |>
+  kable(digits = 2)
 ```
 
-```{r model-1}
-#| label: all-features-model
+```{r}
+#| label: model-1
 
 lm_all_feat <- lm(TARGET_WINS ~ ., data = train_transformed)
 summary(lm_all_feat)
@@ -340,13 +351,13 @@ plot(lm_all_feat)
 
 Let's start with the plot. We see that our residuals vs fitted values is quite close to a horizontal line, which indicates our model is not biased. The Q-Q residuals tells us "how normally distributed are our residuals?", with the diagonal dotted line representing a perfect normal distribution. We see that our residuals are not perfectly normal, but they are close enough to be acceptable (some deviation at the tails is expected for a real world dataset).
 
-Now, reviewing the model summary, we see our adjusted R2 value is 0.3146, which is not an impressive model. This means only 31.46% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is improved over the baseline of 15.7. 
+Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which is not an impressive model. This means only 33.01% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is improved over the baseline of 15.7. 
 
 In summary, this basic linear model with all features is not a good model. While it is slightly better than the naive mean model, we should explore further to find a better model.
 
 Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_BB`, `TEAM_PITCHING_HR`, and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We'll take a look at this next.
 
-## Model 2
+## Model 2 - Feature Selection
 
 Let's consider pruning our feature set for our second model. If we review the earlier correlation plot, we see that `TEAM_BATTING_HR` and `TEAM_PITCHING_HR` are very highly correlated at 97%. These features encode the same information, so we will drop them.
 
@@ -354,9 +365,11 @@ Evaluating pair-wise correlations is a good first step, but a more robust way to
 
 We now calculate VIF for our first model to see if any features have a high degree of multicollinearity.
 
-```{r vif-model1}
+```{r}
 #| label: vif-model1
-vif(lm_all_feat)
+
+enframe(vif(lm_all_feat), name = "Term", value = "VIF") |>
+  kable(digits = 2)
 ```
 
 As expected, the home run features have a very high VIF, indicating they are highly collinear. We also see that `TEAM_PITCHING_BB` and `TEAM_BATTING_BB` have a similar relationship with a VIF > 5, so we will drop `TEAM_PITCHING_BB`  and `TEAM_PITCHING_HR` from our second model.
@@ -370,72 +383,329 @@ train_pruned <- train_transformed |>
 
 Let's now fit our second model with the pruned feature set and evaluate the results.
 
-```{r model-2}
+```{r}
 #| label: model-2
 lm_pruned <- lm(TARGET_WINS ~ ., data = train_pruned)
 
 summary(lm_pruned)
+par(mfrow = c(2, 2))
 plot(lm_pruned)
-
 ```
 
-## Model 3
+We do not see a significant improvement in our metrics with this feature selection, but at least our model is simpler with no downsides, having removed the multicollinear features. We will explore one more model with a more robust null value imputation, advanced feature selection, and regularization
 
-_Describe the variable selection rationale for this model._
+## Model 3 - Informed Preprocessing
 
-```{r model-3}
+We will take what we've learned from the data in our last models and apply it here, along with generally more sophisticated techniques. For this third model, we want to apply the below;
+
+- K Nearest Neighbor null imputation
+- Backward elimination feature selection
+
+KNN imputation should allow for more representative features rather than mean or median imputation. Backward elmination will ensure we are using the most informative features, while keeping the model as simple as possible. 
+
+```{r}
+#| label: model-3-prep
+
+# Impute every remaining missing column with k-nearest neighbors, after
+# dropping TEAM_BATTING_HBP (almost always null). Reused later for the
+# evaluation data and the holdout validation split.
+impute_missing_knn <- function(df, k = 5) {
+  df |>
+    select(-TEAM_BATTING_HBP) |>
+    VIM::kNN(
+      variable = c(
+        "TEAM_BASERUN_CS", "TEAM_BASERUN_SB", "TEAM_PITCHING_SO",
+        "TEAM_BATTING_SO", "TEAM_FIELDING_DP"
+      ),
+      k = k,
+      imp_var = FALSE
+    )
+}
+
+train_imputed <- train |> impute_missing_knn()
+
+# Same transformations as before
+train_transformed <- train_imputed |>
+  mutate(
+    # Log transform TEAM_FIELDING_E to reduce skew and improve linearity
+    TEAM_FIELDING_E = log(TEAM_FIELDING_E + 1),
+
+    # Cap outliers to three standard deviations from the mean for
+    # TEAM_PITCHING_H, TEAM_PITCHING_SO, and TEAM_PITCHING_BB
+    TEAM_PITCHING_H  = cap_outliers(TEAM_PITCHING_H),
+    TEAM_PITCHING_SO = cap_outliers(TEAM_PITCHING_SO),
+    TEAM_PITCHING_BB = cap_outliers(TEAM_PITCHING_BB)
+  )
+```
+
+With the improved preprocessing, we now perform backwards elimination for our feature selection. This means we start with all features, produce a model, remove the most uninformative feature, fit a new model, and so on until the best combination of features is found. This is a simple but effective method of automatic feature selection.
+
+```{r}
 #| label: model-3
 
-# TODO: fit third model
+# Fit the saturated model, then run backward elimination by AIC
+lm_full_m3 <- lm(TARGET_WINS ~ ., data = train_transformed)
+
+lm_backward <- step(lm_full_m3, direction = "backward", trace = 1)
+
+summary(lm_backward)
+
+# Plot residuals
+par(mfrow = c(2, 2))
+plot(lm_backward)
 ```
 
-## Coefficient Discussion
+Backward elimination only removes `TEAM_PITCHING_HR`, stopping at 13 of the 14 predictors. This agrees with our Model 2 pruning: `TEAM_PITCHING_HR` was the redundant half of its collinear pair with `TEAM_BATTING_HR`, so the algorithm converges on the same conclusion we reached manually with VIF, though it keeps `TEAM_PITCHING_BB` and `TEAM_BATTING_2B`, which we might have been tempted to drop by hand.
 
-_Discuss whether coefficient signs and magnitudes align with the theoretical effects noted in the
-assignment (e.g., positive vs. negative impact on wins). Flag and discuss any counterintuitive
-coefficients and whether the variable is retained._
+Reviewing the metrics, our more robust preprocessing has improved the model materially. Adjusted R2 is 0.3792, versus ~0.31 for Model 1 and Model 2, and RMSE is 12.37, down from 13.04. The residual plots confirm that our residuals are evenly distributed, and all assumptions of linear regresison are still met - expected, as we did not transform the features for this model.
 
-# Select Models
+Let's now analyze the model results more deeply.
 
-## Multicollinearity
+### Coefficient Discussion
 
-```{r vif}
+The coefficients should be assessed by two measures; relative magnitude, and directionality. We often do not want to concern ourselves with the specific values of the coefficients, as these are point estimates from the possible values, but the magnitude and direction give us information on our features.
+
+While all of our backwards elimination selected features are statistically significant, we make the below observations regarding some of the more interesting coefficients;
+
+- `TEAM_FIELDING_E` has the largest coefficient by a significant margin, and is negatively correlated with target wins. This tells us that fielding errors is a significant contributor towards losses, which is intuitive and easily explained. A team looking to improve their win rate should first focus on minimizing fielding errors.
+- `TEAM_FIELDING_DP` represents double plays, where a fielding team gets two outs in the same play, generally considered very favorable. However, our model has assigned a *negative* correlation, indicating that double plays are associated with losses more than wins.
+- `TEAM_BATTING_3B` has the highest *positive* correlation with wins. Interestingly, our model has it as even higher than home runs (`TEAM_BATTING_HR`), although considering difference is within the error ranges, this is a good example of not taking the coefficient values too literally. Batting generaly shows a positive correlation, as expected, with the exception of double bases which is negative.
+
+```{r}
+#| label: model-3-coefficients
+
+# Display the coefficients in a clean, readable table
+summary(lm_backward)$coefficients |>
+  as.data.frame() |>
+  rownames_to_column("Term") |>
+  rename(`p value` = `Pr(>|t|)`) |>
+  kable(digits = 4)
+```
+
+
+### Multicollinearity
+
+Our best model still has some degree of multicolinearity between features as indicated by VIF scores > 5. However, the key thing is that the very tightly coupled, pair-wise features have been removed. As evidenced from our improved R2 values, multicollinear features still contribute meaningful signal in the model, which is why our step feature selection kept them. The very correlated pair features `TEAM_BATTING_HR` and `TEAM_PITCHING_HR` have been excluded from Model 2 and 3 as reasoned previously.
+
+A further improvement would be to apply some form of regularization to the model, such as lasso or ridge regressions. These regressions include a regularization hyperparameter that can be tuned to shrink collinear coeffficients to reduce the impact of the multicolinearity.
+
+```{r}
 #| label: vif
 
-# TODO: variance inflation factors
+list(
+  "Model 1: All Features" = lm_all_feat,
+  "Model 2: Pruned" = lm_pruned,
+  "Model 3: Backward Elimination" = lm_backward
+) |>
+  map(vif) |>
+  map(~ enframe(.x, name = "Term", value = "VIF")) |>
+  bind_rows(.id = "Model") |>
+  pivot_wider(names_from = Model, values_from = VIF) |>
+  kable(digits = 2) |>
+  kable_styling(font_size = 8)
 ```
 
-## Model Comparison
 
-```{r model-comparison}
-#| label: model-comparison
+### Residual Diagnostics
 
-# TODO: compare models on Adjusted R2, RMSE, F-statistic, AIC/BIC
-```
+When analyzing residuals, we are concerned with obvious non-linear patterns that indicate homoscedasticity or some non-linearity in the feature-target correlations. Both of these are visual indicators that we could then further investigate.
 
-## Residual Diagnostics
+Throughout all models, the residuals have appeared to be quite reasonable, and as such we can conclude that general linear models are appropriate for this data. The errors are well distributed with no obvious patterns.
 
-```{r residual-diagnostics}
+```{r}
 #| label: fig-residuals
 #| fig-cap: "Residual diagnostic plots for the selected model"
 
-# TODO: residual diagnostic plots
+par(mfrow = c(2, 2))
+plot(lm_backward)
 ```
 
-## Final Model Selection
+## Model Selection
 
-_State which model is selected as final and justify the choice against the criteria discussed
-above (Adjusted R2, RMSE, F-statistic, parsimony, interpretability, residual behavior)._
+To validate our model selection, we will use the training data and create a holdout set. The bulk of the training data will be used to fit each of Model 1, 2, and 3, and the remaining holdout set will be used to compare out of sample performance. This is an important step, because it confirms not only which model has the most predictive power, but which will generalize to unseen data.
 
-# Predictions on Evaluation Data
+```{r}
+#| label: holdout-validation
 
-```{r predictions}
+# Create hold out sets from the training data to compare all three models
+set.seed(621)
+holdout_index <- createDataPartition(train$TARGET_WINS, p = 0.8, list = FALSE)
+train_split <- train[holdout_index, ]
+test_split  <- train[-holdout_index, ]
+
+# Model 1 / 2 prep: mean/median + single-variable KNN imputation,
+# with imputation statistics learned from train_split only
+impute_stats_m1 <- list(
+  cs_median = median(train_split$TEAM_BASERUN_CS, na.rm = TRUE),
+  sb_median = median(train_split$TEAM_BASERUN_SB, na.rm = TRUE),
+  so_mean   = mean(train_split$TEAM_PITCHING_SO, na.rm = TRUE),
+  dp_mean   = mean(train_split$TEAM_FIELDING_DP, na.rm = TRUE)
+)
+
+impute_mean_median_m1 <- function(df, stats) {
+  df |>
+    mutate(
+      TEAM_BASERUN_CS = ifelse(
+        is.na(TEAM_BASERUN_CS), stats$cs_median, TEAM_BASERUN_CS
+      ),
+      TEAM_BASERUN_SB = ifelse(
+        is.na(TEAM_BASERUN_SB), stats$sb_median, TEAM_BASERUN_SB
+      ),
+      TEAM_PITCHING_SO = ifelse(
+        is.na(TEAM_PITCHING_SO), stats$so_mean, TEAM_PITCHING_SO
+      ),
+      TEAM_FIELDING_DP = ifelse(
+        is.na(TEAM_FIELDING_DP), stats$dp_mean, TEAM_FIELDING_DP
+      )
+    ) |>
+    VIM::kNN(variable = "TEAM_BATTING_SO", k = 5, imp_var = FALSE) |>
+    select(-TEAM_BATTING_HBP)
+}
+
+train_split_imp_m1 <- impute_mean_median_m1(train_split, impute_stats_m1)
+test_split_imp_m1  <- impute_mean_median_m1(test_split, impute_stats_m1)
+
+# Cap and transform using thresholds learned from train_split only
+cap_stats_m1 <- list(
+  ph_thresh = mean(train_split_imp_m1$TEAM_PITCHING_H) +
+    3 * sd(train_split_imp_m1$TEAM_PITCHING_H),
+  pso_thresh = mean(train_split_imp_m1$TEAM_PITCHING_SO) +
+    3 * sd(train_split_imp_m1$TEAM_PITCHING_SO),
+  pbb_thresh = mean(train_split_imp_m1$TEAM_PITCHING_BB) +
+    3 * sd(train_split_imp_m1$TEAM_PITCHING_BB)
+)
+
+prep_transform <- function(df, stats) {
+  df |>
+    mutate(
+      TEAM_FIELDING_E  = log(TEAM_FIELDING_E + 1),
+      TEAM_PITCHING_H  = cap_outliers(TEAM_PITCHING_H, stats$ph_thresh),
+      TEAM_PITCHING_SO = cap_outliers(TEAM_PITCHING_SO, stats$pso_thresh),
+      TEAM_PITCHING_BB = cap_outliers(TEAM_PITCHING_BB, stats$pbb_thresh)
+    )
+}
+
+train_split_t_m1 <- prep_transform(train_split_imp_m1, cap_stats_m1)
+test_split_t_m1  <- prep_transform(test_split_imp_m1, cap_stats_m1)
+
+lm_holdout_m1 <- lm(TARGET_WINS ~ ., data = train_split_t_m1)
+lm_holdout_m2 <- lm(
+  TARGET_WINS ~ . - TEAM_PITCHING_BB - TEAM_PITCHING_HR - TEAM_BATTING_HR,
+  data = train_split_t_m1
+)
+
+# Model 3 prep: KNN imputation across all missing columns,
+# with capping statistics again learned from train_split only
+train_split_imp_m3 <- train_split |> impute_missing_knn()
+test_split_imp_m3  <- test_split  |> impute_missing_knn()
+
+cap_stats_m3 <- list(
+  ph_thresh = mean(train_split_imp_m3$TEAM_PITCHING_H) +
+    3 * sd(train_split_imp_m3$TEAM_PITCHING_H),
+  pso_thresh = mean(train_split_imp_m3$TEAM_PITCHING_SO) +
+    3 * sd(train_split_imp_m3$TEAM_PITCHING_SO),
+  pbb_thresh = mean(train_split_imp_m3$TEAM_PITCHING_BB) +
+    3 * sd(train_split_imp_m3$TEAM_PITCHING_BB)
+)
+
+train_split_t_m3 <- prep_transform(train_split_imp_m3, cap_stats_m3)
+test_split_t_m3  <- prep_transform(test_split_imp_m3, cap_stats_m3)
+
+lm_holdout_m3_full <- lm(TARGET_WINS ~ ., data = train_split_t_m3)
+lm_holdout_m3 <- step(lm_holdout_m3_full, direction = "backward", trace = 0)
+
+# Score all three on the held-out split
+rmse <- function(actual, pred) sqrt(mean((actual - pred)^2))
+r2 <- function(actual, pred) {
+  1 - sum((actual - pred)^2) / sum((actual - mean(actual))^2)
+}
+
+pred_m1 <- predict(lm_holdout_m1, newdata = test_split_t_m1)
+pred_m2 <- predict(lm_holdout_m2, newdata = test_split_t_m1)
+pred_m3 <- predict(lm_holdout_m3, newdata = test_split_t_m3)
+
+# Put results together
+tibble(
+  Model = c(
+    "Model 1: All Features", "Model 2: Pruned", "Model 3: Backward Elimination"
+  ),
+  `Holdout RMSE` = c(
+    rmse(test_split_t_m1$TARGET_WINS, pred_m1),
+    rmse(test_split_t_m1$TARGET_WINS, pred_m2),
+    rmse(test_split_t_m3$TARGET_WINS, pred_m3)
+  ),
+  `Holdout R2` = c(
+    r2(test_split_t_m1$TARGET_WINS, pred_m1),
+    r2(test_split_t_m1$TARGET_WINS, pred_m2),
+    r2(test_split_t_m3$TARGET_WINS, pred_m3)
+  ),
+  `Train RMSE` = c(
+    sqrt(mean(resid(lm_holdout_m1)^2)),
+    sqrt(mean(resid(lm_holdout_m2)^2)),
+    sqrt(mean(resid(lm_holdout_m3)^2))
+  ),
+  `Train Adj. R2` = c(
+    summary(lm_holdout_m1)$adj.r.squared,
+    summary(lm_holdout_m2)$adj.r.squared,
+    summary(lm_holdout_m3)$adj.r.squared
+  )
+) |>
+  kable(digits = 3)
+```
+
+Model 3 wins on both holdout RMSE and holdout R2, and its train/holdout gap is smaller than Model 1 or Model 2's, suggesting it generalizes rather than just overfitting the training data. We select Model 3 as our final model.
+
+### Predictions on Evaluation Data
+
+Now that Model 3 is confirmed as our best model, we run the evaluation dataset through it.
+
+```{r}
 #| label: predictions
 
-# TODO: apply the same preparation steps used on train to evaluation, then predict and write out
+evaluation_imputed <- evaluation |>
+  select(-INDEX) |>
+  impute_missing_knn()
+
+# Cap using train's thresholds, not evaluation's own, to avoid leakage
+evaluation_transformed <- evaluation_imputed |>
+  mutate(
+    TEAM_FIELDING_E = log(TEAM_FIELDING_E + 1),
+    TEAM_PITCHING_H = cap_outliers(
+      TEAM_PITCHING_H,
+      mean(train_imputed$TEAM_PITCHING_H) + 3 * sd(train_imputed$TEAM_PITCHING_H)
+    ),
+    TEAM_PITCHING_SO = cap_outliers(
+      TEAM_PITCHING_SO,
+      mean(train_imputed$TEAM_PITCHING_SO) + 3 * sd(train_imputed$TEAM_PITCHING_SO)
+    ),
+    TEAM_PITCHING_BB = cap_outliers(
+      TEAM_PITCHING_BB,
+      mean(train_imputed$TEAM_PITCHING_BB) + 3 * sd(train_imputed$TEAM_PITCHING_BB)
+    )
+  )
+
+predictions <- evaluation |>
+  transmute(INDEX, TARGET_WINS = predict(lm_backward, newdata = evaluation_transformed))
+
+write_csv(predictions, "data/moneyball-predictions.csv")
+
+head(predictions) |>
+  kable()
 ```
+
+# Conclusion
+
+Starting with data exploration and a note on the base rates set up our expectations and gave us a baseline for our models. Using visualizations, we were able to understand the data more thoroughly which helped inform our preprocessing and feature selection methods. Iterating through multiple models allowed us to find continually improve our model and identify areas of improvement at each step. Evaluating the models comprehensively by considering R2, coefficients, RMSEs, and residual analysis allowed us to be confident our model was appropriate and our process effective.
+
+We selected Model 3, a simple multiple-regression model that used backwards elimination feature selection, as well as KNN imputation as our best option, confirmed by holdout validation against Models 1 and 2. This model is decent compromise of complexity and fit, but we believe further improvements could be made by introducing regularization.
 
 # Appendix: R Code
 
-_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
-additional content is needed here unless supplementary code is included._
+_This section re-echoes every code chunk above, without re-executing any of it, for reproducibility._
+
+```{r}
+#| label: appendix-code
+#| ref.label: !expr knitr::all_labels()
+#| echo: true
+#| eval: false
+```
