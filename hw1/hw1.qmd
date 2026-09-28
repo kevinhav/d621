@@ -14,7 +14,7 @@ format:
     fig-width: 7
     fig-height: 4.5
 execute:
-  echo: true
+  echo: false
   warning: false
   message: false
 ---
@@ -32,6 +32,9 @@ library(caret)
 library(VIM)
 library(kableExtra)
 
+# Set early so every random step in this document (KNN imputation tie-breaking,
+# the later train/test split) is reproducible, not just the steps after this point
+set.seed(621)
 
 theme_set(theme_minimal())
 ```
@@ -49,8 +52,12 @@ We first load both data sets. We will drop the index to ensure we do not acciden
 ```{r}
 #| label: load-data
 
-train <- read_csv("data/moneyball-training-data.csv")
-evaluation <- read_csv("data/moneyball-evaluation-data.csv")
+# Resolve the data directory whether we're executing from the project root
+# (e.g. an interactive "Run All") or from hw1/ itself (quarto render's default)
+data_dir <- if (dir.exists("data")) "data" else "hw1/data"
+
+train <- read_csv(file.path(data_dir, "moneyball-training-data.csv"))
+evaluation <- read_csv(file.path(data_dir, "moneyball-evaluation-data.csv"))
 
 train <- train |> select(-INDEX)
 ```
@@ -283,7 +290,7 @@ plot_predictors_vs_target(
 
 This gives us a better picture of what variables may required transformation to better fit our linear model. We will break it down by **Outliers**, **Skewness**, and **Non-linear relationships**.
 
-- Outliers: `TEAM_PITCHING_H`, `TEAM_PITCHING_SO`, and `TEAM_PITCHING_BB` have extreme outliers that will need to be addressed. 
+- Outliers: `TEAM_PITCHING_H`, `TEAM_PITCHING_SO`, and `TEAM_PITCHING_BB` have extreme outliers that will need to be addressed. We will cap these at the third standard deviation to prevent them from unduly affecting the model.
 - Skewness: Besides outliers, most variables are approximately normally distributed. For now we will leave them as-is to prefer simplicity in our model.
 - Non-linear relationships: Our scatterplot does not show any obvious non-linear relationships, but given `TEAM_FIELDING_E` has a long tail, and we see a slight curve in the scatterplot, we may consider a log transformation to see if it improves the linearity of the relationship.
 
@@ -326,7 +333,7 @@ plot_predictors_vs_target(
 
 ## Model 1 - Baseline
 
-A simple linear model is always a good starting point. Even if it is not a good model, it gives us a baseline to compare against other models. We will use all predictors in this model, on the entire dataset, double check the as`sumptions of linear regression, and evaluate the model performance.
+A simple linear model is always a good starting point. Even if it is not a good model, it gives us a baseline to compare against other models. We will use all predictors in this model, on the entire dataset, double check the assumptions of linear regression, and evaluate the model performance.
 
 We should also be mindful of the base rate of wins in the dataset. The mean wins is 80.79 with a $\pm$ 15.7 standard deviation. This means that a naive model that predicts the mean for all teams would have an RMSE of 15.7. Any model we build should be able to beat this baseline.
 
@@ -351,7 +358,7 @@ plot(lm_all_feat)
 
 Let's start with the plot. We see that our residuals vs fitted values is quite close to a horizontal line, which indicates our model is not biased. The Q-Q residuals tells us "how normally distributed are our residuals?", with the diagonal dotted line representing a perfect normal distribution. We see that our residuals are not perfectly normal, but they are close enough to be acceptable (some deviation at the tails is expected for a real world dataset).
 
-Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which is not an impressive model. This means only 33.01% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 13.04, which is improved over the baseline of 15.7. 
+Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which is not an impressive model. This means only 33.01% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 12.89, which is improved over the baseline of 15.7. 
 
 In summary, this basic linear model with all features is not a good model. While it is slightly better than the naive mean model, we should explore further to find a better model.
 
@@ -457,7 +464,7 @@ plot(lm_backward)
 
 Backward elimination only removes `TEAM_PITCHING_HR`, stopping at 13 of the 14 predictors. This agrees with our Model 2 pruning: `TEAM_PITCHING_HR` was the redundant half of its collinear pair with `TEAM_BATTING_HR`, so the algorithm converges on the same conclusion we reached manually with VIF, though it keeps `TEAM_PITCHING_BB` and `TEAM_BATTING_2B`, which we might have been tempted to drop by hand.
 
-Reviewing the metrics, our more robust preprocessing has improved the model materially. Adjusted R2 is 0.3792, versus ~0.31 for Model 1 and Model 2, and RMSE is 12.37, down from 13.04. The residual plots confirm that our residuals are evenly distributed, and all assumptions of linear regresison are still met - expected, as we did not transform the features for this model.
+Reviewing the metrics, our more robust preprocessing has improved the model materially. Adjusted R2 is 0.3792, versus ~0.31 for Model 1 and Model 2, and RMSE is 12.41, down from 12.89. The residual plots confirm that our residuals are evenly distributed, and all assumptions of linear regresison are still met - expected, as we did not transform the features for this model.
 
 Let's now analyze the model results more deeply.
 
@@ -687,7 +694,7 @@ evaluation_transformed <- evaluation_imputed |>
 predictions <- evaluation |>
   transmute(INDEX, TARGET_WINS = predict(lm_backward, newdata = evaluation_transformed))
 
-write_csv(predictions, "data/moneyball-predictions.csv")
+write_csv(predictions, file.path(data_dir, "moneyball-predictions.csv"))
 
 head(predictions) |>
   kable()
