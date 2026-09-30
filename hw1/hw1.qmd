@@ -362,7 +362,7 @@ Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which 
 
 In summary, this basic linear model with all features is not a good model. While it is slightly better than the naive mean model, we should explore further to find a better model.
 
-Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_BB`, `TEAM_PITCHING_HR`, and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We'll take a look at this next.
+Before we move on, we should note the p-values for some of the feature coefficients. We see very large p-values for `TEAM_PITCHING_HR` and `TEAM_BASERUN_CS`, which indicates these features are not statistically significant in predicting wins. We'll take a look at this next.
 
 ## Model 2 - Feature Selection
 
@@ -716,3 +716,6 @@ _This section re-echoes every code chunk above, without re-executing any of it, 
 #| echo: true
 #| eval: false
 ```
+
+<!-- Scratch check, not part of the write-up: is TEAM_PITCHING_BB collinear
+with the other predictors? Remove before final submission. -->
