@@ -13,6 +13,7 @@ format:
     number-sections: true
     fig-width: 7
     fig-height: 4.5
+    fig-pos: "H"
 execute:
   echo: false
   warning: false
@@ -145,6 +146,7 @@ ggplot(train_long, aes(x = "", y = value)) +
   labs(x = NULL, y = NULL, title = "Variable Distributions") +
   theme_minimal(base_size = 9.6)
 ```
+
 
 ## Correlation with Target
 
