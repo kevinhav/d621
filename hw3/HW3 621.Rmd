@@ -1,0 +1,412 @@
+---
+title: "DATA 621: Homework 3 — Logistic Regression"
+author: "Rebecca Bronstein, Kevin Harris, Michael Drake, Aaliyah John-Harry"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+    keep_tex: true
+geometry: margin=0.8in
+fontsize: 10pt
+highlight: null
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{listings}
+  - \lstset{breaklines=true, breakatwhitespace=true, columns=fullflexible, basicstyle=\ttfamily\scriptsize, keepspaces=true, showstringspaces=false, frame=single}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+  comment="", fig.width=6.2, fig.height=4.2, fig.align="center",
+  out.width="0.92\\linewidth")
+options(width=75, scipen=999)
+set.seed(621)
+```
+
+# Executive Summary
+
+This analysis uses binary logistic regression to predict whether a neighborhood's crime rate is above the median (`target = 1`) or not (`target = 0`). Three candidate models are compared on a held-out portion of the training data. The selected model is then refit on all training observations and used to generate probabilities and classifications for the evaluation data. The required classification threshold is 0.5. Because the evaluation data do not include known target values, evaluation accuracy cannot be calculated.
+
+# 1. Data Exploration
+
+## 1.1 Dataset size and variables
+
+```{r load-data}
+train_raw <- read.csv("C:/Users/Home/Downloads/crime-training-data_modified.csv", stringsAsFactors=FALSE)
+eval_raw <- read.csv("C:/Users/Home/Downloads/crime-evaluation-data_modified.csv", stringsAsFactors=FALSE)
+predictors <- setdiff(names(train_raw), "target")
+stopifnot("target" %in% names(train_raw), all(predictors %in% names(eval_raw)))
+train_raw$target <- as.integer(train_raw$target)
+if (!all(na.omit(unique(train_raw$target)) %in% c(0L, 1L))) stop("target must be 0/1")
+
+missing_summary <- data.frame(
+  Dataset=c("Training","Evaluation"),
+  Rows=c(nrow(train_raw),nrow(eval_raw)),
+  Columns=c(ncol(train_raw),ncol(eval_raw)),
+  Missing_Cells=c(sum(is.na(train_raw)),sum(is.na(eval_raw)))
+)
+knitr::kable(missing_summary, caption="Dataset size and missing cells")
+```
+
+The training file contains `r nrow(train_raw)` observations and `r ncol(train_raw)` variables. The evaluation file contains `r nrow(eval_raw)` observations and `r ncol(eval_raw)` predictor variables. The response variable, `target`, indicates whether crime is above the median. Predictors are `zn` (large-lot residential zoning), `indus` (non-retail business land), `chas` (Charles River adjacency), `nox` (nitrogen oxides), `rm` (average rooms), `age` (older owner-occupied housing), `dis` (distance to employment centers), `rad` (highway access), `tax` (property-tax rate), `ptratio` (pupil-teacher ratio), `lstat` (lower-status population percentage), and `medv` (median home value).
+
+## 1.2 Summary statistics and target balance
+
+```{r summary-stats}
+desc <- data.frame(
+  Variable=predictors,
+  Mean=vapply(train_raw[predictors],mean,numeric(1),na.rm=TRUE),
+  SD=vapply(train_raw[predictors],sd,numeric(1),na.rm=TRUE),
+  Median=vapply(train_raw[predictors],median,numeric(1),na.rm=TRUE),
+  Min=vapply(train_raw[predictors],min,numeric(1),na.rm=TRUE),
+  Max=vapply(train_raw[predictors],max,numeric(1),na.rm=TRUE)
+)
+knitr::kable(desc,digits=3,caption="Training predictor summary statistics")
+target_counts <- table(factor(train_raw$target,levels=c(0,1)))
+knitr::kable(data.frame(
+  Target=c("0: Not above median","1: Above median"),
+  Count=as.integer(target_counts),
+  Percent=100*as.integer(target_counts)/length(train_raw$target)
+),digits=1,caption="Target distribution")
+# Set the y-axis range and ticks to include the full bar heights.
+target_max <- max(target_counts)
+axis_top <- ceiling(target_max / 50) * 50
+barplot(target_counts,
+  names.arg=c("Not above median (0)","Above median (1)"),
+  main="Training target distribution",
+  ylab="Neighborhood count",
+  col=c("#3B82B8", "#E07A3F"),
+  border=NA,
+  las=1,
+  ylim=c(0, axis_top),
+  yaxt="n")
+axis(2, at=seq(0, axis_top, by=50), las=1)
+
+```
+
+The target balance matters because accuracy can be misleading when one class is more common. Sensitivity, specificity, precision, F1 score, and AUC are also used to compare models.
+
+## 1.3 Predictor distributions and correlations
+
+```{r boxplots, fig.height=6}
+par(mfrow=c(3,4),mar=c(3,3,2,1),cex=0.7, bty="l")
+plot_cols <- grDevices::hcl.colors(length(predictors), palette="Dynamic")
+for (i in seq_along(predictors)) {
+  v <- predictors[i]
+  boxplot(train_raw[[v]],main=v,ylab="",col=plot_cols[i],
+          border="#343A40",outline=FALSE, staplewex=0.5)
+}
+par(mfrow=c(1,1),cex=1,bty="o")
+```
+
+```{r correlations, fig.height=5}
+cor_matrix <- cor(train_raw[predictors],use="pairwise.complete.obs")
+knitr::kable(round(cor_matrix,2),caption="Pearson correlations among predictors")
+corr_target <- sort(cor(train_raw[predictors],train_raw["target"])[,1])
+knitr::kable(data.frame(Variable=names(corr_target),
+  Correlation_with_target=as.numeric(corr_target)),digits=3,
+  caption="Predictor correlations with target")
+par(bty="l")
+barplot(corr_target,horiz=TRUE,las=1,main="Correlation with target",
+  xlab="Pearson correlation",
+  col=ifelse(corr_target>=0,"#3B82B8","#E07A3F"),
+  border=NA, cex.names=0.75, xlim=c(-1,1))
+abline(v=0,lty=2,col="#343A40",lwd=1.2)
+par(bty="o")
+```
+
+Correlations with the binary target are useful for exploration, but they do not establish causation and do not account for relationships among predictors. Correlated predictors can also make individual regression coefficients less stable.
+
+# 2. Data Preparation
+
+The two files contain the same 12 predictors; only the training data include `target`. If missing values are present, predictor missingness is filled using training-set medians, which are also applied to the evaluation set. A missing response, if any, is filled with the most frequent observed target class. The supplied data are otherwise kept in their original units to preserve interpretability. The `chas` indicator remains coded as 0/1.
+
+A stratified split reserves approximately 20% of the training data for validation. Stratification preserves the target-class proportions approximately, and all models are evaluated on the same held-out observations.
+
+```{r prepare}
+if (anyNA(train_raw) || anyNA(eval_raw)) {
+  for (v in predictors) {
+    med <- median(train_raw[[v]],na.rm=TRUE)
+    train_raw[[v]][is.na(train_raw[[v]])] <- med
+    eval_raw[[v]][is.na(eval_raw[[v]])] <- med
+  }
+  if (anyNA(train_raw$target)) {
+    train_raw$target[is.na(train_raw$target)] <- as.integer(
+      names(which.max(table(train_raw$target))))
+  }
+}
+set.seed(621)
+class0 <- which(train_raw$target==0)
+class1 <- which(train_raw$target==1)
+valid_idx <- sort(c(sample(class0,max(1,floor(.20*length(class0)))),
+                    sample(class1,max(1,floor(.20*length(class1))))))
+model_idx <- setdiff(seq_len(nrow(train_raw)),valid_idx)
+model_data <- train_raw[model_idx,,drop=FALSE]
+valid_data <- train_raw[valid_idx,,drop=FALSE]
+knitr::kable(data.frame(
+  Subset=c("Model fitting","Validation"),
+  Rows=c(nrow(model_data),nrow(valid_data)),
+  Target_0=c(sum(model_data$target==0),sum(valid_data$target==0)),
+  Target_1=c(sum(model_data$target==1),sum(valid_data$target==1))
+),caption="Stratified modeling and validation split")
+```
+
+# 3. Build Models
+
+Three candidates are compared: (1) a full model with all 12 predictors; (2) a focused model using `nox`, `rm`, `dis`, `rad`, `tax`, `ptratio`, `lstat`, and `medv`; and (3) a stepwise model selected from the full model using Akaike's Information Criterion (AIC). The focused model emphasizes environmental conditions, accessibility, neighborhood characteristics, and housing value. AIC balances model fit with model complexity.
+
+For logistic regression, a coefficient is the change in log-odds for a one-unit predictor increase while holding other included predictors constant. Exponentiating a coefficient gives its odds ratio. Positive coefficients indicate higher modeled odds of `target = 1`; negative coefficients indicate lower modeled odds. These are associations, not causal effects.
+
+```{r fit-models}
+model_full <- glm(target~zn+indus+chas+nox+rm+age+dis+rad+tax+ptratio+lstat+medv,
+  data=model_data,family=binomial(link="logit"))
+model_focused <- glm(target~nox+rm+dis+rad+tax+ptratio+lstat+medv,
+  data=model_data,family=binomial(link="logit"))
+model_stepwise <- step(model_full,direction="both",trace=0)
+models <- list("Model 1: Full"=model_full,
+  "Model 2: Focused"=model_focused,"Model 3: Stepwise AIC"=model_stepwise)
+for (nm in names(models)) {
+  co <- summary(models[[nm]])$coefficients
+  tab <- data.frame(Term=rownames(co),Estimate=co[,1],Std_Error=co[,2],
+    z_value=co[,3],p_value=co[,4],Odds_Ratio=exp(co[,1]),row.names=NULL)
+  cat("\n\n**",nm," coefficients and odds ratios**\n\n",sep="")
+  print(knitr::kable(tab,digits=4))
+}
+```
+
+Statistical significance is not the only selection criterion. Predictive performance on held-out observations, model parsimony, and whether estimated relationships are plausible are also considered.
+
+# 4. Select and Evaluate Models
+
+All classification metrics use a 0.5 threshold, with `target = 1` as the positive class. Accuracy is the proportion correctly classified; classification error is the proportion misclassified; precision is the proportion of predicted positives that are true positives; sensitivity is the proportion of actual positives identified; specificity is the proportion of actual negatives identified; and F1 is the harmonic mean of precision and sensitivity. AUC measures ranking performance across thresholds. Lower AIC is preferred when comparing models fitted to the same data.
+
+```{r metrics-functions}
+safe_div <- function(a,b) if (b==0) NA_real_ else a/b
+auc_rank <- function(actual,prob) {
+  n1 <- sum(actual==1); n0 <- sum(actual==0)
+  if (n1==0 || n0==0) return(NA_real_)
+  r <- rank(prob,ties.method="average")
+  (sum(r[actual==1])-n1*(n1+1)/2)/(n1*n0)
+}
+get_metrics <- function(actual,prob,threshold=0.5) {
+  pred <- as.integer(prob>=threshold)
+  TP <- sum(pred==1 & actual==1); TN <- sum(pred==0 & actual==0)
+  FP <- sum(pred==1 & actual==0); FN <- sum(pred==0 & actual==1)
+  precision <- safe_div(TP,TP+FP)
+  sensitivity <- safe_div(TP,TP+FN)
+  specificity <- safe_div(TN,TN+FP)
+  f1 <- if (is.na(precision)||is.na(sensitivity)||precision+sensitivity==0) NA_real_
+        else 2*precision*sensitivity/(precision+sensitivity)
+  data.frame(TP=TP,TN=TN,FP=FP,FN=FN,
+    Accuracy=(TP+TN)/length(actual),
+    Classification_Error=(FP+FN)/length(actual),
+    Precision=precision,Sensitivity=sensitivity,Specificity=specificity,
+    F1=f1,AUC=auc_rank(actual,prob))
+}
+validation_metrics <- do.call(rbind,lapply(names(models),function(nm) {
+  fit <- models[[nm]]
+  p <- predict(fit,newdata=valid_data,type="response")
+  data.frame(Model=nm,AIC=AIC(fit),
+    get_metrics(valid_data$target,p,threshold=0.5),
+    row.names=NULL,check.names=FALSE)
+}))
+rownames(validation_metrics) <- NULL
+validation_display <- validation_metrics
+names(validation_display) <- c(
+  "Model", "AIC", "TP", "TN", "FP", "FN",
+  "Accuracy", "Error", "Precision", "Sensitivity",
+  "Specificity", "F1", "AUC"
+)
+```
+
+```{r validation-table-fit, results='asis', echo=FALSE}
+cat("\\begin{table}[!htbp]\n\\centering\n\\small\n")
+cat("\\caption{Validation performance at the 0.5 threshold}\n")
+cat("\\resizebox{\\textwidth}{!}{%\n")
+cat(knitr::kable(validation_display, format="latex", booktabs=TRUE,
+                 digits=3, row.names=FALSE, escape=TRUE))
+cat("\n}\n\\end{table}\n")
+```
+
+```{r confusion-matrices, results='asis'}
+for (nm in names(models)) {
+  p <- predict(models[[nm]],newdata=valid_data,type="response")
+  predicted <- factor(ifelse(p>=0.5,1,0),levels=c(0,1))
+  actual <- factor(valid_data$target,levels=c(0,1))
+  cm <- as.data.frame.matrix(table(Actual=actual,Predicted=predicted))
+  cat("\\subsubsection*{", nm, " confusion matrix}\n", sep="")
+  cat(knitr::kable(cm, format="latex", booktabs=TRUE, row.names=TRUE))
+  cat("\n\n")
+}
+```
+
+The preferred model is selected using validation AUC first, then F1 score, then accuracy. This emphasizes both ranking quality and classification performance rather than relying on accuracy alone. AIC is supporting evidence; it is not directly used as the only criterion because the candidate models can have different numbers of predictors.
+
+```{r choose-model}
+rank_value <- function(x) ifelse(is.na(x),-Inf,x)
+ord <- order(rank_value(validation_metrics$AUC),
+  rank_value(validation_metrics$F1),rank_value(validation_metrics$Accuracy),
+  decreasing=TRUE)
+selected_name <- validation_metrics$Model[ord[1]]
+cat("Selected model based on validation ranking:",selected_name)
+```
+
+# 5. Evaluation-Set Predictions
+
+The selected model specification is refit on all training observations. The final model generates probabilities for the evaluation observations, and the required threshold of 0.5 converts probabilities into class labels.
+
+```{r final-predictions}
+selected_formula <- formula(models[[selected_name]])
+final_model <- glm(selected_formula,data=train_raw,family=binomial(link="logit"))
+eval_prob <- predict(final_model,newdata=eval_raw,type="response")
+eval_class <- ifelse(eval_prob>=0.5,1L,0L)
+evaluation_predictions <- data.frame(
+  Evaluation_Row=seq_len(nrow(eval_raw)),
+  Probability_Above_Median_Crime=eval_prob,
+  Predicted_Class_0_5=eval_class)
+write.csv(evaluation_predictions,"crime-evaluation-predictions.csv",row.names=FALSE)
+knitr::kable(head(evaluation_predictions,15),digits=4,
+  caption="First 15 evaluation predictions; complete output saved to CSV")
+knitr::kable(data.frame(Predicted_Class=c(0,1),
+  Count=c(sum(eval_class==0),sum(eval_class==1)),
+  Percent=100*c(sum(eval_class==0),sum(eval_class==1))/length(eval_class)),
+  digits=1,caption="Evaluation predictions by class")
+par(bty="l")
+hist(eval_prob,breaks=10,main="Evaluation predicted probabilities",
+  xlab="Probability of above-median crime",
+  col="#4DAF9A",border="white",ylim=NULL)
+abline(v=0.5,lty=2,lwd=2,col="#C44536")
+par(bty="o")
+```
+
+The full `r nrow(eval_raw)`-row output is written to `crime-evaluation-predictions.csv` when the document is knitted. The probability column preserves the estimated probability, while the class column applies the required threshold. These are predictions, not verified outcomes; the evaluation file contains no known target values with which to calculate accuracy.
+
+# Conclusion
+
+This analysis used binary logistic regression to classify neighborhoods according to whether their crime rate was above the median. The exploratory analysis summarized the predictor variables, examined the balance of the two target classes, and assessed missing values, distributions, and correlations. These steps helped identify the structure and quality of the data before fitting the models. The predictors were retained in their original units, and a stratified validation sample was used so that the candidate models could be compared on the same held-out observations.
+
+Three models were evaluated: a full model containing all 12 predictors, a focused model containing eight selected predictors, and a stepwise model selected using AIC. At the required 0.5 classification threshold, the stepwise AIC model performed best on the validation sample. It achieved 91.3% accuracy, compared with 89.1% for the full model and 84.8% for the focused model. The stepwise model also had the highest sensitivity (88.9%), F1 score (0.909), and AUC (0.963). Its confusion matrix showed 44 true negatives, 40 true positives, three false positives, and five false negatives. In practical terms, it correctly classified 84 of the 92 validation observations and missed fewer above-median cases than either alternative.
+
+These results support selecting the stepwise model from the three candidates for scoring the evaluation dataset. However, the differences in validation performance should be interpreted with care: the validation set is a subset of the supplied training data, and results on new data may differ. The model identifies statistical associations in the supplied variables; it does not show that any predictor causes crime levels to rise or fall. In addition, the 0.5 threshold is the threshold required for this assignment, but a real-world application might choose a different threshold depending on the relative costs of false positives and false negatives.
+
+Finally, the selected model was refit using all available training observations and used to produce a probability and a class prediction for each evaluation record. The full predictions are saved to `crime-evaluation-predictions.csv`. Because the evaluation dataset does not contain known target values, its accuracy, sensitivity, specificity, and other outcome-based metrics cannot be calculated. The predictions should therefore be treated as model estimates rather than confirmed classifications.
+
+# Appendix A. R Code
+
+The appendix provides the R code in a small, line-wrapping listing. The PDF `listings` setting allows long lines to wrap and code listings to continue across pages. The code is displayed for reference and is not re-executed in the appendix.
+
+```{r appendix-code, echo=TRUE, eval=FALSE, size="\\scriptsize", tidy=TRUE, tidy.opts=list(width.cutoff=65)}
+# DATA 621 Homework 3: Logistic Regression
+# CSV files are read from the Downloads folder paths below.
+
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE,message=FALSE,
+  comment="",fig.width=6.2,fig.height=4.2,fig.align="center",
+  out.width="0.92\\linewidth")
+options(width=75,scipen=999)
+set.seed(621)
+
+train_raw <- read.csv("C:/Users/Home/Downloads/crime-training-data_modified.csv",
+  stringsAsFactors=FALSE)
+eval_raw <- read.csv("C:/Users/Home/Downloads/crime-evaluation-data_modified.csv",
+  stringsAsFactors=FALSE)
+predictors <- setdiff(names(train_raw),"target")
+train_raw$target <- as.integer(train_raw$target)
+
+# Explore missingness, summary statistics, target balance, plots,
+# and predictor correlations as shown in Sections 1 and 2 above.
+
+if (anyNA(train_raw)||anyNA(eval_raw)) {
+  for (v in predictors) {
+    med <- median(train_raw[[v]],na.rm=TRUE)
+    train_raw[[v]][is.na(train_raw[[v]])] <- med
+    eval_raw[[v]][is.na(eval_raw[[v]])] <- med
+  }
+  if (anyNA(train_raw$target)) {
+    train_raw$target[is.na(train_raw$target)] <- as.integer(
+      names(which.max(table(train_raw$target))))
+  }
+}
+
+# Stratified 80/20 validation split
+set.seed(621)
+class0 <- which(train_raw$target==0)
+class1 <- which(train_raw$target==1)
+valid_idx <- sort(c(sample(class0,max(1,floor(.20*length(class0)))),
+                    sample(class1,max(1,floor(.20*length(class1))))))
+model_idx <- setdiff(seq_len(nrow(train_raw)),valid_idx)
+model_data <- train_raw[model_idx,,drop=FALSE]
+valid_data <- train_raw[valid_idx,,drop=FALSE]
+
+# Model 1: full predictor model
+model_full <- glm(target~zn+indus+chas+nox+rm+age+dis+rad+tax+
+  ptratio+lstat+medv,data=model_data,family=binomial(link="logit"))
+
+# Model 2: focused predictor model
+model_focused <- glm(target~nox+rm+dis+rad+tax+ptratio+lstat+medv,
+  data=model_data,family=binomial(link="logit"))
+
+# Model 3: stepwise AIC model
+model_stepwise <- step(model_full,direction="both",trace=0)
+models <- list("Model 1: Full"=model_full,
+  "Model 2: Focused"=model_focused,"Model 3: Stepwise AIC"=model_stepwise)
+
+safe_div <- function(a,b) if (b==0) NA_real_ else a/b
+auc_rank <- function(actual,prob) {
+  n1 <- sum(actual==1); n0 <- sum(actual==0)
+  if (n1==0||n0==0) return(NA_real_)
+  r <- rank(prob,ties.method="average")
+  (sum(r[actual==1])-n1*(n1+1)/2)/(n1*n0)
+}
+get_metrics <- function(actual,prob,threshold=0.5) {
+  pred <- as.integer(prob>=threshold)
+  TP <- sum(pred==1 & actual==1); TN <- sum(pred==0 & actual==0)
+  FP <- sum(pred==1 & actual==0); FN <- sum(pred==0 & actual==1)
+  precision <- safe_div(TP,TP+FP)
+  sensitivity <- safe_div(TP,TP+FN)
+  specificity <- safe_div(TN,TN+FP)
+  f1 <- if (is.na(precision)||is.na(sensitivity)||precision+sensitivity==0)
+    NA_real_ else 2*precision*sensitivity/(precision+sensitivity)
+  data.frame(TP=TP,TN=TN,FP=FP,FN=FN,
+    Accuracy=(TP+TN)/length(actual),
+    Classification_Error=(FP+FN)/length(actual),
+    Precision=precision,Sensitivity=sensitivity,Specificity=specificity,
+    F1=f1,AUC=auc_rank(actual,prob))
+}
+validation_metrics <- do.call(rbind,lapply(names(models),function(nm) {
+  fit <- models[[nm]]
+  p <- predict(fit,newdata=valid_data,type="response")
+  data.frame(Model=nm,AIC=AIC(fit),
+    get_metrics(valid_data$target,p,threshold=0.5),
+    row.names=NULL,check.names=FALSE)
+}))
+rownames(validation_metrics) <- NULL
+
+# Confusion matrices and model ranking
+for (nm in names(models)) {
+  p <- predict(models[[nm]],newdata=valid_data,type="response")
+  predicted <- factor(ifelse(p>=0.5,1,0),levels=c(0,1))
+  actual <- factor(valid_data$target,levels=c(0,1))
+  print(table(Actual=actual,Predicted=predicted))
+}
+rank_value <- function(x) ifelse(is.na(x),-Inf,x)
+ord <- order(rank_value(validation_metrics$AUC),
+  rank_value(validation_metrics$F1),rank_value(validation_metrics$Accuracy),
+  decreasing=TRUE)
+selected_name <- validation_metrics$Model[ord[1]]
+
+# Refit selected specification and score evaluation rows
+selected_formula <- formula(models[[selected_name]])
+final_model <- glm(selected_formula,data=train_raw,
+  family=binomial(link="logit"))
+eval_prob <- predict(final_model,newdata=eval_raw,type="response")
+eval_class <- ifelse(eval_prob>=0.5,1L,0L)
+evaluation_predictions <- data.frame(
+  Evaluation_Row=seq_len(nrow(eval_raw)),
+  Probability_Above_Median_Crime=eval_prob,
+  Predicted_Class_0_5=eval_class)
+write.csv(evaluation_predictions,"crime-evaluation-predictions.csv",
+  row.names=FALSE)
+```
