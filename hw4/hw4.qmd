@@ -29,6 +29,13 @@ library(psych)
 library(car)
 library(caret)
 library(pROC)
+library(kableExtra)
+library(tidytext)
+library(missForest)
+library(MASS)
+library(car)
+
+set.seed(313)
 
 theme_set(theme_minimal())
 ```
@@ -45,18 +52,28 @@ one occurs.
 ```{r load-data}
 #| label: load-data
 
-train <- read_csv("data/insurance-training-data.csv")
-evaluation <- read_csv("data/insurance-evaluation-data.csv")
+train = read_csv("data/insurance-training-data.csv")
+evaluation = read_csv("data/insurance-evaluation-data.csv")
 
-train <- train %>% select(-INDEX)
+train = train %>% select(-INDEX)
 ```
 
 ## Size and Structure
 
+Data contains 8161 observations, 23 predictors, and 2 target variables.
+Variables such as `INCOME` and `BLUEBOOK` currently coded as characters due to leading $. These will need to be transformed to numeric variables for use in models.
+
 ```{r data-structure}
 #| label: data-structure
 
-# TODO: dim(), glimpse(), etc.
+tibble(
+  Variable = names(train),
+  Type     = map_chr(train, ~ class(.x)[1]),
+  Example  = map_chr(train, ~ paste(head(.x, 3), collapse = ", "))
+) |>
+  kable()
+
+dim(train)
 ```
 
 ## Summary Statistics
@@ -64,7 +81,22 @@ train <- train %>% select(-INDEX)
 ```{r summary-stats}
 #| label: summary-stats
 
-# TODO: mean / sd / median summary table
+describe(train) |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  select(Variable, mean, sd, median, se) |>
+  kable(digits = 2)
+```
+
+## Cleaning Currency and Categorical Fields
+
+```{r clean-fields}
+#| label: clean-fields
+
+train = train |>
+  mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
+         ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
+         across(!where(is.numeric), as.factor))
 ```
 
 ## Distributions
@@ -73,7 +105,35 @@ train <- train %>% select(-INDEX)
 #| label: fig-distributions
 #| fig-cap: "Distributions of numeric variables"
 
+train_long_num = pivot_longer(
+  train,
+  cols = where(is.numeric),   
+  names_to = "variable",      
+  values_to = "value")
+
+train_long_num |>
+  ggplot(aes(x = value)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
+
 # TODO: histograms or density plots of numeric variables
+```
+
+```{r}
+#| label: fig-boxplots
+#| fig-cap: "Boxplots of predictor and target variables"
+
+ggplot(train_long_num, aes(x = "", y = value)) +
+  geom_boxplot(
+    fill = "#3a86d4", colour = "black",
+    outlier.colour = "black", linewidth = 0.4
+  ) +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(x = NULL, y = NULL, title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6) +
+  coord_flip()
 ```
 
 ## Categorical Variables
@@ -82,7 +142,23 @@ train <- train %>% select(-INDEX)
 #| label: fig-categorical
 #| fig-cap: "Bar charts of categorical variables"
 
-# TODO: bar charts of categorical variables
+train_long_chr = pivot_longer(
+  train,
+  cols = !where(is.numeric),   
+  names_to = "variable",      
+  values_to = "value")
+
+train_long_chr |>
+  count(variable, value, name = "count") |>
+  ggplot(aes(x = reorder_within(value, count, variable), y = count)) +
+  geom_col(fill = "#3a86d4", colour = "white") +
+  scale_x_reordered() +
+  scale_y_continuous(n.breaks = 4,
+                     labels = scales::label_number(scale_cut = scales::cut_short_scale())) +
+  coord_flip() +
+  facet_wrap(~ variable, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
 ```
 
 ## Correlation with Targets
@@ -91,7 +167,21 @@ train <- train %>% select(-INDEX)
 #| label: fig-correlation
 #| fig-cap: "Correlation matrix of numeric variables"
 
-# TODO: correlation matrix / correlation with TARGET_FLAG and TARGET_AMT
+cor_matrix <- train |>
+  select(where(is.numeric)) |>
+  cor(use = "pairwise.complete.obs")
+
+# Then we can plot the corr plot
+corrplot(cor_matrix,
+         method = "color",
+         type = "lower",
+         order = "hclust",
+         addCoef.col = "black",
+         number.cex = 0.6,
+         tl.col = "black",
+         tl.cex = 0.6,
+         tl.srt = 45,
+         diag = FALSE)
 ```
 
 ## Missing Data
@@ -99,7 +189,22 @@ train <- train %>% select(-INDEX)
 ```{r missing-data}
 #| label: missing-data
 
-# TODO: count of missing values per variable
+missing_props = train_long_num |>
+  group_by(variable) |>
+  summarise(
+    proportion_missing = mean(is.na(value)),
+    .groups = "drop") |>
+  rbind(train_long_chr |>
+          group_by(variable) |>
+          summarise(proportion_missing = mean(is.na(value)), .groups = "drop"))
+
+ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
+                          y = proportion_missing)) +
+  geom_col(fill = "#3a86d4") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Proportion missing", title = "Missing Data by Variable") +
+  theme_minimal(base_size = 12)
 ```
 
 _Discuss what the exploration reveals: notable distributions, skew, outliers, class balance of
@@ -109,13 +214,7 @@ imputation or cleanup (e.g., currency-formatted strings like `INCOME`, `HOME_VAL
 
 # Data Preparation
 
-## Cleaning Currency and Categorical Fields
-
-```{r clean-fields}
-#| label: clean-fields
-
-# TODO: strip $ and , from currency fields (INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM) and coerce to numeric
-```
+Variables representing currency were cleaned (removing $ and ,) prior to generating the distributions.
 
 ## Missing Value Imputation
 
@@ -124,18 +223,67 @@ _Describe the imputation strategy and, where relevant, add missingness flag vari
 ```{r impute}
 #| label: impute
 
-# TODO: missingness flags and imputation
+train_imputed = missForest(as.data.frame(train))$ximp
+
+train_imputed |> summarise(across(everything(), ~sum(is.na(.))))
 ```
 
 ## Feature Transformations
 
-_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for
-each._
+_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for each._
 
 ```{r transformations}
 #| label: transformations
 
-# TODO: bucketing, log/sqrt/Box-Cox transforms, derived variables
+sapply(
+  train_imputed |> dplyr::select(where(is.numeric)),
+  \(x) BoxCoxTrans(x)$lambda
+)
+
+num_data <- train_imputed |>
+  dplyr::select(where(is.numeric), -TARGET_FLAG, -TARGET_AMT)
+
+# how much to add to each column so its smallest value becomes 1
+shift_amt <- sapply(num_data, \(x) {
+  m <- min(x, na.rm = TRUE)
+  if (m <= 0) 1 - m else 0
+})
+
+# see which columns get shifted
+shift_amt[shift_amt > 0]   
+
+# helper that adds the stored shift to each column
+apply_shift <- function(df, shifts) {
+  for (col in names(shifts)) df[[col]] <- df[[col]] + shifts[[col]]
+  df
+}
+
+# Shift first, then Box-Cox / center / scale
+num_shifted <- apply_shift(num_data, shift_amt)
+
+pp <- preProcess(num_shifted, method = c("BoxCox", "center", "scale"))
+lambdas <- sapply(pp$bc, \(x) x$lambda)
+lambdas
+
+train_pp <- predict(pp, num_shifted)
+
+# Evaluation data: same shift, same pp
+eval_shifted <- apply_shift(
+  eval_imputed |> dplyr::select(all_of(names(num_data))),
+  shift_amt
+)
+eval_pp <- predict(pp, eval_shifted)
+
+train_pp |>
+  pivot_longer(
+  cols = where(is.numeric),   
+  names_to = "variable",      
+  values_to = "value") |>
+  ggplot(aes(x = value)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
 ```
 
 # Build Models
