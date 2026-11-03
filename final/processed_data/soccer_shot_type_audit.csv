@@ -1,0 +1,16 @@
+league,shot_type,attempts,tagged_accurate,tagged_goals,goals_without_accurate_tag
+England,Free kick shot,350,100,18,0
+England,Open-play shot,8451,2986,914,2
+England,Penalty,80,56,56,0
+France,Free kick shot,521,163,26,0
+France,Open-play shot,8327,2963,873,1
+France,Penalty,129,99,99,0
+Germany,Free kick shot,299,92,18,0
+Germany,Open-play shot,6898,2512,747,1
+Germany,Penalty,93,68,68,0
+Italy,Free kick shot,415,143,36,0
+Italy,Open-play shot,8806,3069,853,0
+Italy,Penalty,126,89,89,0
+Spain,Free kick shot,453,152,28,0
+Spain,Open-play shot,7979,2960,884,0
+Spain,Penalty,113,81,81,0

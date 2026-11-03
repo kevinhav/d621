@@ -1,0 +1,17 @@
+variable,definition,source,notes
+match_id,Unique match identifier,Matches,Shared join key
+match_date,Match date (UTC),Matches,2017–18 season
+league,Domestic competition,ZIP filename,Five leagues
+team_id,Unique team identifier,Matches,Use ID for joins/models
+team_name,Team display name,Match label,Parsed; validate labels
+opponent_id,Opposing team identifier,Matches,From other side
+opponent_name,Opposing team display name,Match label,Parsed; validate labels
+home,"1 = home, 0 = away",Matches,Binary indicator
+goals,Official goals scored by team,Matches,Regression response
+goals_conceded,Official goals scored by opponent,Matches,For context
+shots,"Shot, free-kick shot, or penalty events",Events,Attempt count
+on_target_tagged,Shots with accuracy tag 1801,Events,Proxy; validate against definitions
+passes_attempted,Events labeled Pass,Events,Excludes set-piece categories
+passes_accurate,Passes tagged accurate (1801),Events,Numerator
+pass_accuracy_pct,100 × accurate passes / attempted passes,Derived,NA if no passes
+pass_share_pct,100 × team passes / total match passes,Derived,"POSSESSION PROXY, not official possession"
