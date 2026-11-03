@@ -1,0 +1,718 @@
+---
+title: "DATA 621 | Soccer Final Project — Data Preparation"
+author:
+  - name: Aaliyah John-Harry
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronstein
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+subtitle: 'Wyscout 2017–18: Five European Domestic Leagues'
+---
+
+# Purpose
+
+This reproducible R Markdown notebook turns the two raw ZIP archives into **one row per team per match**, suitable for the group's exploratory analysis and regression models.
+
+**Inputs:** `soccer_matches.zip` and `soccer_events.zip` (the five domestic leagues only).
+
+**Outputs:** a clean CSV, data dictionary, validation summaries, a starter regression script, and an optional RDS file.
+
+**Important measurement decision:** The supplied event files do **not** contain official possession percentages. We calculate `pass_share_pct`, each team's share of all pass events in its match, as a **possession proxy**. This is *not* official time-in-possession and should be labeled accordingly in the report. We also calculate `on_target_tagged` using Wyscout's accurate-event tag for shot attempts; this is a **tag-based shot-on-target proxy** that should be checked before treating it as an official shot-on-target count.
+
+# 1. Packages and paths
+
+```{r setup, message=FALSE, warning=FALSE}
+required <- c("jsonlite", "dplyr", "tidyr", "purrr", "stringr", "readr",
+              "tibble", "knitr")
+missing <- setdiff(required, rownames(installed.packages()))
+if (length(missing)) install.packages(missing, repos = "https://cloud.r-project.org")
+invisible(lapply(required, library, character.only = TRUE))
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(dplyr.summarise.inform = FALSE)
+
+# Put both ZIP files in the same folder as this Rmd, or edit these paths.
+matches_zip <- "soccer_matches.zip"
+events_zip  <- "soccer_events.zip"
+output_dir  <- "processed_data"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+stopifnot(file.exists(matches_zip), file.exists(events_zip))
+leagues <- c("England", "Spain", "Italy", "Germany", "France")
+```
+
+# 2. Read the original archives
+
+```{r helpers}
+find_zip_member <- function(zip_path, kind, league) {
+  members <- utils::unzip(zip_path, list = TRUE)$Name
+  pattern <- paste0("(^|/)", kind, "_", league, "\\.json$")
+  candidates <- grep(pattern, members, value = TRUE)
+  if (length(candidates) != 1L) {
+    stop("Expected one ", kind, " file for ", league,
+         "; found ", length(candidates), ".")
+  }
+  candidates
+}
+
+read_zip_json <- function(zip_path, member) {
+  # unzip to a temporary directory: handles JSON arrays, not NDJSON
+  tmp <- tempfile("wyscout_")
+  dir.create(tmp)
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  utils::unzip(zip_path, files = member, exdir = tmp)
+  jsonlite::fromJSON(file.path(tmp, member), simplifyVector = FALSE)
+}
+
+has_tag <- function(tags, id) {
+  if (is.null(tags) || length(tags) == 0) return(FALSE)
+  any(vapply(tags, function(x) identical(as.integer(x$id), as.integer(id)),
+             logical(1)))
+}
+
+# Optional display names: parsed from match labels, while IDs remain the
+# authoritative identifiers. Labels normally look like "Home - Away, 2 - 1".
+parse_label_names <- function(label) {
+  without_score <- sub(",\\s*[0-9]+\\s*-\\s*[0-9]+\\s*$", "", label)
+  pieces <- strsplit(without_score, " - ", fixed = TRUE)[[1]]
+  if (length(pieces) != 2) return(c(NA_character_, NA_character_))
+  pieces
+}
+```
+
+# 3. Extract match results: two rows per match
+
+We use the **official score in the match file** as the response variable. Counting goal tags from events is not an adequate replacement because own goals and other edge cases can cause mismatches.
+
+```{r match-extraction}
+extract_matches <- function(league) {
+  member <- find_zip_member(matches_zip, "matches", league)
+  matches <- read_zip_json(matches_zip, member)
+
+  purrr::map_dfr(matches, function(m) {
+    sides <- m$teamsData
+    if (length(sides) != 2L) return(tibble::tibble())
+    team_rows <- purrr::map_dfr(sides, function(t) {
+      tibble::tibble(
+        team_id = as.integer(t$teamId),
+        side = as.character(t$side),
+        goals = as.integer(t$score)
+      )
+    })
+    if (!setequal(team_rows$side, c("home", "away"))) {
+      stop("Unexpected home/away sides in match ", m$wyId)
+    }
+    home_id <- team_rows$team_id[team_rows$side == "home"]
+    away_id <- team_rows$team_id[team_rows$side == "away"]
+    names <- parse_label_names(m$label)
+
+    team_rows %>%
+      dplyr::mutate(
+        match_id = as.integer(m$wyId),
+        league = league,
+        match_date = as.Date(substr(m$dateutc, 1, 10)),
+        home = as.integer(side == "home"),
+        opponent_id = ifelse(side == "home", away_id, home_id),
+        team_name = ifelse(side == "home", names[1], names[2]),
+        opponent_name = ifelse(side == "home", names[2], names[1]),
+        goals_conceded = ifelse(side == "home",
+                                team_rows$goals[team_rows$side == "away"],
+                                team_rows$goals[team_rows$side == "home"])
+      ) %>%
+      dplyr::select(match_id, match_date, league, team_id, team_name,
+                    opponent_id, opponent_name, home, goals, goals_conceded)
+  })
+}
+
+match_data <- purrr::map_dfr(leagues, extract_matches)
+stopifnot(nrow(match_data) == 3652L)
+stopifnot(nrow(dplyr::distinct(match_data, match_id, team_id)) == nrow(match_data))
+stopifnot(all(match_data$goals >= 0), all(!is.na(match_data$goals)))
+knitr::kable(match_data %>% dplyr::count(league, name = "team_match_rows"))
+```
+
+# 4. Aggregate event records by match and team
+
+Definitions:
+
+- `shots`: all event records where `eventName == "Shot"` **or** `subEventName` is `"Free kick shot"` or `"Penalty"`.
+- `on_target_tagged`: those shot attempts with tag `1801` (accurate). **Proxy**: validate its interpretation before calling it official shots on target.
+- `passes_attempted`: all events with `eventName == "Pass"`.
+- `passes_accurate`: passes tagged `1801`.
+- `pass_accuracy_pct`: 100 × accurate passes / attempted passes.
+- `pass_share_pct`: 100 × team passes / both teams' passes in that match; **not official possession**.
+
+Set pieces such as throw-ins, goal kicks and corners are *not* counted as passes in this definition.
+
+```{r event-extraction}
+extract_events <- function(league) {
+  member <- find_zip_member(events_zip, "events", league)
+  events <- read_zip_json(events_zip, member)
+
+  # Vectorized extraction is much faster than binding ~600k one-row tibbles.
+  event_name <- vapply(events, function(e) e$eventName, character(1))
+  sub_name <- vapply(events, function(e) e$subEventName, character(1))
+  is_pass <- event_name == "Pass"
+  is_shot <- event_name == "Shot" |
+    sub_name %in% c("Free kick shot", "Penalty")
+  keep <- which(is_pass | is_shot)
+  rm(event_name, sub_name)
+
+  event_rows <- tibble::tibble(
+    match_id = vapply(events[keep], function(e) as.integer(e$matchId), integer(1)),
+    team_id = vapply(events[keep], function(e) as.integer(e$teamId), integer(1)),
+    passes_attempted = as.integer(is_pass[keep]),
+    shots = as.integer(is_shot[keep]),
+    accurate = vapply(events[keep], function(e) has_tag(e$tags, 1801L), logical(1))
+  ) %>%
+    dplyr::mutate(
+      passes_accurate = as.integer(passes_attempted == 1L & accurate),
+      on_target_tagged = as.integer(shots == 1L & accurate)
+    )
+  rm(events)
+
+  event_rows %>%
+    dplyr::group_by(match_id, team_id) %>%
+    dplyr::summarise(
+      passes_attempted = sum(passes_attempted),
+      passes_accurate = sum(passes_accurate),
+      shots = sum(shots),
+      on_target_tagged = sum(on_target_tagged),
+      .groups = "drop"
+    )
+}
+
+# Processing each league separately avoids loading all ~3 million events at once.
+event_data <- purrr::map_dfr(leagues, function(league) {
+  message("Processing events: ", league)
+  gc(verbose = FALSE)
+  extract_events(league)
+})
+
+stopifnot(nrow(dplyr::distinct(event_data, match_id, team_id)) ==
+            nrow(event_data))
+knitr::kable(event_data %>% dplyr::summarise(
+  event_team_match_rows = dplyr::n(),
+  shots = sum(shots),
+  passes = sum(passes_attempted)
+))
+```
+
+# 5. Join events to match results and create derived variables
+
+Use a **left join** so that every team-match from the match files remains present. Missing event summaries are treated as missing, not automatically as zero.
+
+```{r join-and-derive}
+soccer_data <- match_data %>%
+  dplyr::left_join(event_data, by = c("match_id", "team_id")) %>%
+  dplyr::group_by(match_id) %>%
+  dplyr::mutate(
+    match_passes = sum(passes_attempted, na.rm = TRUE),
+    pass_share_pct = dplyr::if_else(
+      !any(is.na(passes_attempted)) & match_passes > 0,
+      100 * passes_attempted / match_passes,
+      NA_real_
+    ),
+    pass_accuracy_pct = dplyr::if_else(
+      !is.na(passes_attempted) & passes_attempted > 0,
+      100 * passes_accurate / passes_attempted,
+      NA_real_
+    )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(-match_passes) %>%
+  dplyr::arrange(league, match_date, match_id, dplyr::desc(home))
+
+stopifnot(nrow(soccer_data) == nrow(match_data))
+stopifnot(nrow(dplyr::distinct(soccer_data, match_id, team_id)) ==
+            nrow(soccer_data))
+```
+
+# 6. Validate the analysis-ready data
+
+These checks are intended to **stop the pipeline** for structural problems and print warnings for statistics that need manual investigation.
+
+```{r validations}
+# Every match must have exactly two different teams and one home side.
+match_checks <- soccer_data %>%
+  dplyr::group_by(match_id) %>%
+  dplyr::summarise(
+    rows = dplyr::n(),
+    home_count = sum(home),
+    distinct_teams = dplyr::n_distinct(team_id),
+    pass_share_total = sum(pass_share_pct),
+    pass_share_missing = any(is.na(pass_share_pct)),
+    .groups = "drop"
+  )
+
+stopifnot(all(match_checks$rows == 2L))
+stopifnot(all(match_checks$home_count == 1L))
+stopifnot(all(match_checks$distinct_teams == 2L))
+
+# Goals for a team must equal goals conceded by its opponent.
+score_checks <- soccer_data %>%
+  dplyr::group_by(match_id) %>%
+  dplyr::summarise(
+    reciprocal_scores = all(goals == rev(goals_conceded)),
+    .groups = "drop"
+  )
+stopifnot(all(score_checks$reciprocal_scores))
+
+stopifnot(all(is.na(soccer_data$shots) |
+                soccer_data$on_target_tagged <= soccer_data$shots))
+stopifnot(all(is.na(soccer_data$passes_attempted) |
+                soccer_data$passes_accurate <= soccer_data$passes_attempted))
+
+valid_shares <- !match_checks$pass_share_missing
+stopifnot(all(abs(match_checks$pass_share_total[valid_shares] - 100) < 1e-8))
+
+missing_summary <- soccer_data %>%
+  dplyr::summarise(dplyr::across(
+    dplyr::everything(), ~sum(is.na(.x)),
+    .names = "missing_{.col}"
+  )) %>%
+  tidyr::pivot_longer(dplyr::everything(),
+                      names_to = "field", values_to = "missing_rows") %>%
+  dplyr::filter(missing_rows > 0)
+
+knitr::kable(missing_summary)
+knitr::kable(soccer_data %>%
+  dplyr::group_by(league) %>%
+  dplyr::summarise(
+    matches = dplyr::n_distinct(match_id),
+    teams = dplyr::n_distinct(team_id),
+    mean_goals = mean(goals),
+    mean_shots = mean(shots, na.rm = TRUE),
+    mean_pass_share = mean(pass_share_pct, na.rm = TRUE),
+    .groups = "drop"
+  ))
+```
+
+```{r fix-team-names}
+library(stringi)
+library(dplyr)
+
+# Decode literal Unicode escape sequences in team names
+decode_team_name <- function(x) {
+  vapply(x, function(name) {
+    if (is.na(name)) return(NA_character_)
+
+    # Only decode names containing literal Unicode escapes
+    if (grepl("\\\\u[0-9a-fA-F]{4}", name)) {
+      name <- stringi::stri_unescape_unicode(name)
+    }
+
+    name
+  }, character(1), USE.NAMES = FALSE)
+}
+
+# Update team and opponent names
+soccer_data <- soccer_data %>%
+  mutate(
+    team_name = decode_team_name(team_name),
+    opponent_name = decode_team_name(opponent_name)
+  )
+
+# Preview corrected names
+soccer_data %>%
+  distinct(team_name) %>%
+  arrange(team_name) %>%
+  print(n = 100)
+```
+
+
+```{r validate-team-names}
+# Check for any remaining Unicode escape sequences
+remaining_escapes <- soccer_data %>%
+  filter(
+    grepl("\\\\u[0-9a-fA-F]{4}", team_name) |
+    grepl("\\\\u[0-9a-fA-F]{4}", opponent_name)
+  )
+
+cat("Rows with remaining Unicode escapes:",
+    nrow(remaining_escapes), "\n")
+
+# Stop knitting if any escaped names remain
+stopifnot(nrow(remaining_escapes) == 0)
+
+# Check specific examples
+soccer_data %>%
+  filter(
+    grepl("Bayern|Atlético|Alavés", team_name)
+  ) %>%
+  distinct(team_name) %>%
+  print()
+```
+
+## Manual spot checks
+
+Select several matches (including 0–0 games and matches with penalties or own goals) and compare the computed statistics with the raw events. In particular, check whether tag `1801` on shots behaves like a true shots-on-target definition. A discrepancy does **not** change the official goals response; it means the shot proxy needs refinement.
+
+```{r spot-checks}
+set.seed(621)
+sample_matches <- sample(unique(soccer_data$match_id), 5)
+knitr::kable(soccer_data %>%
+  dplyr::filter(match_id %in% sample_matches) %>%
+  dplyr::select(match_id, league, team_name, opponent_name, home,
+                goals, shots, on_target_tagged, passes_attempted,
+                pass_accuracy_pct, pass_share_pct))
+```
+
+
+# 7. Additional quality checks and exploratory summaries
+
+These checks are designed to identify potential measurement problems **before**
+the group treats the engineered variables as established soccer statistics.
+The plots below are exploratory only; they are not regression results.
+
+## 7.1 Shot categories and accuracy-tag audit
+
+Wyscout uses tag `1801` for an "accurate" event. For shots, that tag should
+not automatically be equated with the official shots-on-target statistic.
+This audit separates open-play shots, free-kick shots, and penalties, and
+compares accuracy-tag counts with goal-tag counts (tag `101`) and save-related
+tags. The event categories and tag meanings should be confirmed against the
+Wyscout documentation before finalizing the metric.
+
+```{r shot-audit}
+audit_shots <- function(league) {
+  member <- find_zip_member(events_zip, "events", league)
+  events <- read_zip_json(events_zip, member)
+  out <- purrr::map_dfr(events, function(e) {
+    sub <- as.character(e$subEventName)
+    if (!(identical(e$eventName, "Shot") ||
+          sub %in% c("Free kick shot", "Penalty"))) return(NULL)
+    tibble::tibble(
+      league = league,
+      match_id = as.integer(e$matchId),
+      team_id = as.integer(e$teamId),
+      shot_type = dplyr::case_when(
+        sub == "Penalty" ~ "Penalty",
+        sub == "Free kick shot" ~ "Free kick shot",
+        TRUE ~ "Open-play shot"
+      ),
+      accurate_1801 = has_tag(e$tags, 1801L),
+      goal_101 = has_tag(e$tags, 101L),
+      # Keep the raw tag IDs for inspection rather than assuming meanings.
+      tag_ids = paste(vapply(e$tags, function(t) as.character(t$id),
+                             character(1)), collapse = ";")
+    )
+  })
+  rm(events)
+  out
+}
+shot_audit <- purrr::map_dfr(leagues, audit_shots)
+
+shot_type_summary <- shot_audit %>%
+  dplyr::group_by(league, shot_type) %>%
+  dplyr::summarise(
+    attempts = dplyr::n(),
+    tagged_accurate = sum(accurate_1801),
+    tagged_goals = sum(goal_101),
+    goals_without_accurate_tag = sum(goal_101 & !accurate_1801),
+    .groups = "drop"
+  )
+knitr::kable(shot_type_summary)
+
+# If any goals lack tag 1801, treating 1801 as all shots on target
+# would necessarily miss those goals.
+if (any(shot_type_summary$goals_without_accurate_tag > 0)) {
+  warning("Some goal-tagged shots lack 1801; review shot-on-target definition.")
+}
+
+# Compare aggregate shot attempts with the final team-match table.
+stopifnot(nrow(shot_audit) == sum(soccer_data$shots, na.rm = TRUE))
+```
+
+## 7.2 Spot-check raw shots, penalties and free kicks
+
+The sample includes special shot types and goals where available. Use it to
+inspect the raw tag combinations and confirm whether `on_target_tagged` should
+be retained as a proxy or replaced with a better-defined variable.
+
+```{r shot-spot-check}
+set.seed(621)
+shot_examples <- shot_audit %>%
+  dplyr::group_by(shot_type, goal_101) %>%
+  dplyr::group_modify(~dplyr::slice_sample(.x, n = min(5L, nrow(.x)))) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(league, match_id, team_id, shot_type,
+                accurate_1801, goal_101, tag_ids)
+knitr::kable(shot_examples)
+```
+
+## 7.3 Team-name encoding audit
+
+Team IDs are the authoritative keys. Match labels are display strings and
+may contain encoding artifacts (for example `0e9` in place of an accented
+character). This table flags suspicious names for manual correction.
+Do not automatically substitute text into team identifiers.
+
+```{r name-audit}
+name_audit <- soccer_data %>%
+  dplyr::distinct(team_id, team_name, league) %>%
+  dplyr::mutate(
+    suspicious_name = is.na(team_name) |
+      stringr::str_detect(team_name, "[[:cntrl:]]|\\uFFFD|[[:alpha:]][0-9][a-fA-F][0-9a-fA-F][[:alpha:]]")
+  ) %>%
+  dplyr::filter(suspicious_name)
+
+knitr::kable(name_audit)
+# Review the flagged rows and any names that look wrong in league tables.
+# A separate, manually verified team-ID/name lookup is safest.
+```
+
+## 7.4 Numeric ranges, distributions and outliers
+
+```{r distributions}
+numeric_summary <- soccer_data %>%
+  dplyr::select(goals, shots, on_target_tagged, passes_attempted,
+                pass_accuracy_pct, pass_share_pct) %>%
+  tidyr::pivot_longer(dplyr::everything(), names_to = "metric",
+                      values_to = "value") %>%
+  dplyr::group_by(metric) %>%
+  dplyr::summarise(
+    n = sum(!is.na(value)),
+    minimum = min(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    p95 = unname(quantile(value, .95, na.rm = TRUE)),
+    maximum = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+knitr::kable(numeric_summary, digits = 2)
+
+par(mfrow = c(2, 2))
+hist(soccer_data$goals, main = "Goals per team-match", xlab = "Goals",
+     breaks = seq(-0.5, max(soccer_data$goals) + 0.5, by = 1))
+hist(soccer_data$shots, main = "Shot attempts", xlab = "Shots", breaks = 30)
+hist(soccer_data$pass_accuracy_pct, main = "Pass accuracy",
+     xlab = "Percent", breaks = 30)
+hist(soccer_data$pass_share_pct, main = "Pass share proxy",
+     xlab = "Percent", breaks = 30)
+par(mfrow = c(1, 1))
+
+# High-value cases are for inspection, not automatic deletion.
+extreme_matches <- soccer_data %>%
+  dplyr::arrange(dplyr::desc(shots), dplyr::desc(goals)) %>%
+  dplyr::select(match_id, league, team_name, opponent_name, home,
+                goals, shots, on_target_tagged, pass_share_pct) %>%
+  dplyr::slice_head(n = 15)
+knitr::kable(extreme_matches)
+```
+
+## 7.5 Predictor relationships
+
+Shots and shots on target are naturally related. The correlation matrix is
+a screening tool, not proof of problematic multicollinearity. Formal VIF and
+model diagnostics belong in the regression analysis.
+
+```{r predictor-checks}
+predictor_correlations <- soccer_data %>%
+  dplyr::select(shots, on_target_tagged, passes_attempted,
+                pass_accuracy_pct, pass_share_pct) %>%
+  stats::cor(use = "pairwise.complete.obs")
+knitr::kable(round(predictor_correlations, 3))
+
+plot(soccer_data$shots, soccer_data$on_target_tagged,
+     xlab = "Shot attempts", ylab = "Shots with tag 1801 (proxy)",
+     main = "Shot metrics: relationship", pch = 16, cex = .35)
+```
+
+## 7.6 Home versus away analysis
+
+These are **descriptive** comparisons. Differences in means do not establish
+that playing at home causes the differences.
+
+```{r home-away}
+home_away_summary <- soccer_data %>%
+  dplyr::group_by(league, home) %>%
+  dplyr::summarise(
+    team_matches = dplyr::n(),
+    avg_goals = mean(goals, na.rm = TRUE),
+    avg_shots = mean(shots, na.rm = TRUE),
+    avg_pass_accuracy = mean(pass_accuracy_pct, na.rm = TRUE),
+    avg_pass_share = mean(pass_share_pct, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(location = ifelse(home == 1L, "Home", "Away")) %>%
+  dplyr::select(league, location, dplyr::everything(), -home)
+knitr::kable(home_away_summary, digits = 2)
+
+boxplot(goals ~ home, data = soccer_data, names = c("Away", "Home"),
+        xlab = "Match location", ylab = "Goals scored",
+        main = "Goals scored: home vs away")
+```
+
+## 7.7 Possession-proxy checks
+
+`pass_share_pct` is deliberately defined as a **pass-share proxy** rather than
+official ball possession. A useful validity check is whether it stays between
+0 and 100 and whether both teams' shares add to 100 in every match.
+Those checks confirm arithmetic consistency, **not** agreement with official
+possession data. External possession observations would be needed for that.
+
+```{r proxy-validation}
+stopifnot(all(soccer_data$pass_share_pct >= 0 &
+              soccer_data$pass_share_pct <= 100))
+proxy_summary <- soccer_data %>%
+  dplyr::group_by(league) %>%
+  dplyr::summarise(
+    min_pass_share = min(pass_share_pct),
+    median_pass_share = median(pass_share_pct),
+    max_pass_share = max(pass_share_pct),
+    .groups = "drop"
+  )
+knitr::kable(proxy_summary, digits = 2)
+```
+
+# 8. Data dictionary
+
+```{r dictionary}
+data_dictionary <- tibble::tribble(
+  ~variable, ~definition, ~source, ~notes,
+  "match_id", "Unique match identifier", "Matches", "Shared join key",
+  "match_date", "Match date (UTC)", "Matches", "2017–18 season",
+  "league", "Domestic competition", "ZIP filename", "Five leagues",
+  "team_id", "Unique team identifier", "Matches", "Use ID for joins/models",
+  "team_name", "Team display name", "Match label", "Parsed; validate labels",
+  "opponent_id", "Opposing team identifier", "Matches", "From other side",
+  "opponent_name", "Opposing team display name", "Match label", "Parsed; validate labels",
+  "home", "1 = home, 0 = away", "Matches", "Binary indicator",
+  "goals", "Official goals scored by team", "Matches", "Regression response",
+  "goals_conceded", "Official goals scored by opponent", "Matches", "For context",
+  "shots", "Shot, free-kick shot, or penalty events", "Events", "Attempt count",
+  "on_target_tagged", "Shots with accuracy tag 1801", "Events", "Proxy; validate against definitions",
+  "passes_attempted", "Events labeled Pass", "Events", "Excludes set-piece categories",
+  "passes_accurate", "Passes tagged accurate (1801)", "Events", "Numerator",
+  "pass_accuracy_pct", "100 × accurate passes / attempted passes", "Derived", "NA if no passes",
+  "pass_share_pct", "100 × team passes / total match passes", "Derived", "POSSESSION PROXY, not official possession"
+)
+knitr::kable(data_dictionary)
+```
+
+# 9. Export files for the team
+
+```{r exports}
+readr::write_csv(
+  soccer_data,
+  file.path(output_dir, "soccer_team_match_2017_18.csv")
+)
+
+saveRDS(
+  soccer_data,
+  file.path(output_dir, "soccer_team_match_2017_18.rds")
+)
+
+readr::write_csv(data_dictionary,
+                 file.path(output_dir, "soccer_data_dictionary.csv"))
+readr::write_csv(shot_type_summary,
+                 file.path(output_dir, "soccer_shot_type_audit.csv"))
+readr::write_csv(name_audit,
+                 file.path(output_dir, "soccer_name_audit.csv"))
+readr::write_csv(home_away_summary,
+                 file.path(output_dir, "soccer_home_away_summary.csv"))
+readr::write_csv(numeric_summary,
+                 file.path(output_dir, "soccer_numeric_summary.csv"))
+readr::write_csv(missing_summary,
+                 file.path(output_dir, "soccer_missingness.csv"))
+readr::write_csv(match_checks,
+                 file.path(output_dir, "soccer_match_validation.csv"))
+
+starter <- c(
+  "# DATA 621 — Starter regression analysis",
+  "library(readr)",
+  "library(dplyr)",
+  "data <- read_csv('processed_data/soccer_team_match_2017_18.csv',",
+  "                 show_col_types = FALSE)",
+  "",
+  "# pass_share_pct is a pass-share proxy, NOT official possession.",
+  "# Only use complete cases for variables in each model.",
+  "model_data <- data %>%",
+  "  filter(!is.na(pass_share_pct), !is.na(pass_accuracy_pct),",
+  "         !is.na(shots)) %>%",
+  "  mutate(league = factor(league), team_id = factor(team_id))",
+  "",
+  "baseline <- lm(goals ~ pass_share_pct + shots + pass_accuracy_pct +",
+  "                 home + league, data = model_data)",
+  "summary(baseline)",
+  "",
+  "# Team fixed effects; omit league main effect (nested in team).",
+  "team_adjusted <- lm(goals ~ pass_share_pct + shots +",
+  "                      pass_accuracy_pct + home + team_id,",
+  "                    data = model_data)",
+  "summary(team_adjusted)",
+  "",
+  "# League-specific pass-share slopes with team fixed effects.",
+  "league_interaction <- lm(goals ~ pass_share_pct +",
+  "                         pass_share_pct:league + shots +",
+  "                         pass_accuracy_pct + home + team_id,",
+  "                       data = model_data)",
+  "summary(league_interaction)",
+  "",
+  "# Count model: check dispersion and compare held-out performance later.",
+  "poisson_model <- glm(goals ~ pass_share_pct + shots +",
+  "                       pass_accuracy_pct + home + league,",
+  "                     family = poisson(link = 'log'), data = model_data)",
+  "summary(poisson_model)",
+  "sum(residuals(poisson_model, type = 'pearson')^2) /",
+  "  df.residual(poisson_model)",
+  "",
+  "# IMPORTANT: Split by match_id (not rows) before assessing",
+  "# out-of-sample performance, since each match has two team rows."
+)
+writeLines(starter, file.path(output_dir, "starter_regression.R"))
+
+cat("Files created in:", normalizePath(output_dir), "\n")
+print(list.files(output_dir))
+```
+
+```{r}
+library(readr)
+library(dplyr)
+
+soccer_data <- readr::read_csv(
+  file.path(output_dir, "soccer_team_match_2017_18.csv"),
+  show_col_types = FALSE
+)
+
+# Check dimensions
+dim(soccer_data)
+
+# Check variables
+glimpse(soccer_data)
+
+# Check missing values
+colSums(is.na(soccer_data))
+
+# Preview dataset
+soccer_data %>%
+  select(
+    league, team_name, opponent_name,
+    home, goals, shots,
+    pass_share_pct, pass_accuracy_pct
+  ) %>%
+  head(10) %>%
+  knitr::kable(digits = 2)
+```
+
+```{r count-check}
+soccer_data %>%
+  summarise(
+    total_matches = n_distinct(match_id),
+    total_teams = n_distinct(team_id),
+    total_observations = n()
+  )
+
+soccer_data %>%
+  count(match_id) %>%
+  count(n)
+```
