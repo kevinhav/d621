@@ -1,0 +1,1302 @@
+---
+title: "Exploratory Data Analysis: European Soccer Matches, 2017–2018"
+subtitle: "A reproducible, detailed examination of team-match performance across five domestic leagues"
+author: "Exploratory Data Analysis"
+date: today
+date-format: "long"
+format:
+  pdf:
+    documentclass: article
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    geometry:
+      - margin=0.7in
+    colorlinks: true
+    keep-tex: true
+    fig-width: 8
+    fig-height: 5
+    fig-pos: "H"
+    df-print: kable
+execute:
+  echo: true
+  warning: false
+  message: false
+  freeze: auto
+---
+
+# Executive overview
+
+This report explores team-level match statistics from the 2017–18 season across five European domestic competitions: England, France, Germany, Italy, and Spain. The analytical unit is a **team-match**: each real match contributes two observations, one for each participating team.
+
+The supplied analytical files contain 1,826 matches and 3,652 team-match records. The data include goals, goals conceded, shots, tagged shots on target, attempted and accurate passes, a derived passing-accuracy percentage, and a derived pass-share percentage. Supplementary files provide match-validation results, league-level home/away summaries, a numeric summary, a data dictionary, and a shot-type audit.
+
+The central questions are:
+
+1. How are goals, shots, passing volume, and passing accuracy distributed?
+2. How do attacking and passing profiles differ across the five leagues?
+3. Is there evidence of a home-team advantage in goals, shots, and passing measures?
+4. How strongly are shots, passing volume, pass share, and goals associated?
+5. Are there data-quality issues or measurement limitations that should shape interpretation?
+
+**Important measurement note:** `pass_share_pct` is a proxy calculated from each team's share of the two teams' recorded passes. It is not official possession time. Likewise, `on_target_tagged` is based on an event tag and should be interpreted as a tagged-shot measure rather than assumed to be a perfect official shots-on-target statistic.
+
+# 1. Research context and analytical design
+
+## 1.1 Unit of analysis
+
+The main dataset is structured as one row per team per match. A match between Team A and Team B should therefore have two rows sharing the same `match_id`. One row should identify the home team (`home = 1`) and the other the away team (`home = 0`).
+
+This structure is useful for comparing team performance, but it has an important statistical consequence: the two observations from a match are not independent. They share the same match environment and opposing teams. Descriptive comparisons are appropriate, while inferential models should account for match-level clustering or use a match-level structure.
+
+## 1.2 Variables
+
+| Variable | Meaning | Analytical role |
+|---|---|---|
+| `match_id` | Unique match identifier | Match grouping and validation |
+| `match_date` | Match date (UTC) | Time trend and season coverage |
+| `league` | Domestic competition | Grouping variable |
+| `team_id`, `team_name` | Team identifier and label | Team-level grouping |
+| `opponent_id`, `opponent_name` | Opponent identifier and label | Match context |
+| `home` | 1 = home, 0 = away | Venue comparison |
+| `goals` | Goals scored by the team | Main attacking outcome |
+| `goals_conceded` | Goals scored by opponent | Defensive outcome |
+| `shots` | Recorded shot, free-kick-shot, or penalty events | Attacking volume |
+| `on_target_tagged` | Events with accuracy tag 1801 | Tagged shot accuracy proxy |
+| `passes_attempted` | Events labeled Pass | Passing volume |
+| `passes_accurate` | Passes tagged accurate | Accurate-pass count |
+| `pass_accuracy_pct` | Accurate passes / attempted passes × 100 | Passing accuracy |
+| `pass_share_pct` | Team passes / both teams' passes × 100 | Passing share proxy |
+
+## 1.3 Analytical approach
+
+The report combines data validation, descriptive statistics, distribution analysis, grouped comparisons, visual exploration, and association analysis. It does not treat correlations as causal effects. League differences may reflect playing styles, competition structures, team quality, event coverage, or other factors not measured here.
+
+# 2. Setup and data import
+
+The six CSV files are read directly from `C:/Users/Home/Downloads/New folder/`. If you move the CSV files, update `data_dir` in the setup chunk.
+
+```{r 2-setup-and-data-import-01}
+#| label: setup
+#| include: false
+
+required_packages <- c("tidyverse", "lubridate", "scales", "knitr")
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Please install the following packages before rendering: ",
+    paste(missing_packages, collapse = ", "),
+    "\nRun install.packages(c(",
+    paste(sprintf('"%s"', missing_packages), collapse = ", "),
+    "))"
+  )
+}
+
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(knitr)
+
+# All six CSV files are stored in this Windows folder.
+data_dir <- "C:/Users/Home/Downloads/New folder"
+
+team_match <- readr::read_csv(
+  file.path(data_dir, "soccer_team_match_2017_18.csv"),
+  show_col_types = FALSE
+)
+
+shot_audit <- readr::read_csv(
+  file.path(data_dir, "soccer_shot_type_audit.csv"),
+  show_col_types = FALSE
+)
+
+numeric_summary <- readr::read_csv(
+  file.path(data_dir, "soccer_numeric_summary.csv"),
+  show_col_types = FALSE
+)
+
+validation <- readr::read_csv(
+  file.path(data_dir, "soccer_match_validation.csv"),
+  show_col_types = FALSE
+)
+
+home_away_summary <- readr::read_csv(
+  file.path(data_dir, "soccer_home_away_summary.csv"),
+  show_col_types = FALSE
+)
+
+data_dictionary <- readr::read_csv(
+  file.path(data_dir, "soccer_data_dictionary.csv"),
+  show_col_types = FALSE
+)
+
+team_match <- team_match |>
+  mutate(
+    match_date = as.Date(match_date),
+    league = factor(
+      league,
+      levels = c("England", "France", "Germany", "Italy", "Spain")
+    ),
+    venue = factor(
+      if_else(home == 1, "Home", "Away"),
+      levels = c("Away", "Home")
+    )
+  )
+
+numeric_vars <- c(
+  "goals", "goals_conceded", "shots", "on_target_tagged",
+  "passes_attempted", "passes_accurate",
+  "pass_accuracy_pct", "pass_share_pct"
+)
+
+league_palette <- c(
+  "England" = "#35618D",
+  "France" = "#C36B4B",
+  "Germany" = "#5D8B68",
+  "Italy" = "#9276A8",
+  "Spain" = "#C49A42"
+)
+
+theme_eda <- theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(color = "grey35"),
+    axis.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+fmt_num <- function(x, accuracy = 0.01) {
+  scales::number(x, accuracy = accuracy, big.mark = ",")
+}
+```
+
+## 2.1 File inventory
+
+```{r 2-1-file-inventory-02}
+file_inventory <- tibble(
+  file = c(
+    "soccer_team_match_2017_18.csv",
+    "soccer_match_validation.csv",
+    "soccer_home_away_summary.csv",
+    "soccer_numeric_summary.csv",
+    "soccer_data_dictionary.csv",
+    "soccer_shot_type_audit.csv"
+  ),
+  purpose = c(
+    "Primary team-match analytical dataset",
+    "Match-level structural validation",
+    "Precomputed league-by-venue summaries",
+    "Precomputed numeric descriptive statistics",
+    "Variable definitions and measurement notes",
+    "Shot-event classification audit"
+  )
+)
+
+knitr::kable(file_inventory, caption = "Supplied analytical files")
+```
+
+## 2.2 Dataset dimensions and coverage
+
+```{r 2-2-dataset-dimensions-and-coverage-03}
+overview <- tibble(
+  measure = c(
+    "Team-match rows", "Unique matches", "Unique teams",
+    "Leagues", "Distinct match dates", "First match date", "Last match date"
+  ),
+  value = c(
+    nrow(team_match),
+    n_distinct(team_match$match_id),
+    n_distinct(team_match$team_id),
+    n_distinct(team_match$league),
+    n_distinct(team_match$match_date),
+    as.character(min(team_match$match_date, na.rm = TRUE)),
+    as.character(max(team_match$match_date, na.rm = TRUE))
+  )
+)
+
+knitr::kable(overview, caption = "Overall data coverage")
+```
+
+The data cover five leagues and use a team-match structure. A total of 3,652 team-match records corresponds to 1,826 matches if every match has exactly two team records. The validation section below checks whether this expected structure holds.
+
+# 3. Data quality and validation
+
+A strong exploratory analysis begins by checking whether the data structure matches the intended design. The checks below examine missingness, duplicate rows, identifier consistency, valid ranges, and the match-pair structure.
+
+## 3.1 Column types and initial inspection
+
+```{r 3-1-column-types-and-initial-inspec-04}
+glimpse(team_match)
+```
+
+## 3.2 Missing values
+
+```{r 3-2-missing-values-05}
+missingness <- team_match |>
+  summarise(across(everything(), ~ sum(is.na(.x)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "missing_n") |>
+  mutate(
+    missing_pct = 100 * missing_n / nrow(team_match)
+  ) |>
+  arrange(desc(missing_n))
+
+knitr::kable(
+  missingness,
+  digits = 2,
+  caption = "Missing observations by variable"
+)
+```
+
+```{r missingness-visualization}
+if (all(missingness$missing_n == 0)) {
+
+  ggplot(
+    missingness,
+    aes(x = missing_pct, y = reorder(variable, missing_pct))
+  ) +
+    geom_point(color = "#35618D", size = 3) +
+    geom_text(
+      aes(label = sprintf("%.2f%%", missing_pct)),
+      nudge_x = 0.08,
+      size = 3.2
+    ) +
+    scale_x_continuous(
+      limits = c(0, 0.5),
+      breaks = seq(0, 0.5, by = 0.1),
+      labels = scales::label_number(suffix = "%")
+    ) +
+    labs(
+      title = "Missingness Across Team-Match Variables",
+      subtitle = "All variables have complete observations",
+      x = "Missing values (%)",
+      y = NULL
+    ) +
+    theme_eda
+
+} else {
+
+  ggplot(
+    missingness,
+    aes(x = missing_pct, y = reorder(variable, missing_pct))
+  ) +
+    geom_col(fill = "#547C9B") +
+    labs(
+      title = "Missingness Across Team-Match Variables",
+      x = "Missing values (%)",
+      y = NULL
+    ) +
+    theme_eda
+}
+```
+
+A variable with no missing values is complete in this supplied analytical extract, but completeness does not guarantee that the variable is measured without error. The tagged-event measures and derived percentages still require the interpretation caveats described above.
+
+## 3.3 Duplicate records and identifier checks
+
+```{r 3-3-duplicate-records-and-identifie-06}
+duplicate_rows <- team_match |>
+  count(across(everything()), name = "copies") |>
+  filter(copies > 1)
+
+duplicate_team_match <- team_match |>
+  count(match_id, team_id, name = "records") |>
+  filter(records > 1)
+
+identifier_checks <- tibble(
+  check = c(
+    "Exact duplicate rows",
+    "Repeated match_id + team_id combinations",
+    "Missing match IDs",
+    "Missing team IDs",
+    "Missing opponent IDs",
+    "Team and opponent IDs equal"
+  ),
+  problem_count = c(
+    sum(duplicated(team_match)),
+    nrow(duplicate_team_match),
+    sum(is.na(team_match$match_id)),
+    sum(is.na(team_match$team_id)),
+    sum(is.na(team_match$opponent_id)),
+    sum(team_match$team_id == team_match$opponent_id, na.rm = TRUE)
+  )
+)
+
+knitr::kable(identifier_checks, caption = "Identifier and duplication checks")
+```
+
+## 3.4 Match-pair integrity
+
+Each match should have two team records, two distinct teams, and exactly one home team. The supplied validation file allows us to inspect these conditions independently.
+
+```{r 3-4-match-pair-integrity-07}
+validation_summary <- validation |>
+  summarise(
+    matches_checked = n(),
+    matches_with_two_rows = sum(rows == 2, na.rm = TRUE),
+    matches_with_one_home = sum(home_count == 1, na.rm = TRUE),
+    matches_with_two_teams = sum(distinct_teams == 2, na.rm = TRUE),
+    matches_with_100_pass_share = sum(abs(pass_share_total - 100) < 1e-8, na.rm = TRUE),
+    matches_with_missing_pass_share = sum(pass_share_missing, na.rm = TRUE)
+  )
+
+knitr::kable(validation_summary, caption = "Summary of supplied match validation")
+```
+
+```{r 3-4-match-pair-integrity-08}
+validation %>%
+  summarise(
+    across(
+      c(rows, home_count, distinct_teams, pass_share_total),
+      list(min = ~ min(.x, na.rm = TRUE),
+           median = ~ median(.x, na.rm = TRUE),
+           max = ~ max(.x, na.rm = TRUE))
+    )
+  ) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+  knitr::kable(digits = 2, caption = "Distribution of match-validation fields")
+```
+
+The supplied validation summary reports 1,826 matches. The expected pattern is two rows per match, one home team, two distinct teams, and a combined pass share of 100%. These checks support the internal consistency of the team-match structure and the pass-share calculation.
+
+## 3.5 Range and logical consistency checks
+
+```{r 3-5-range-and-logical-consistency-c-09}
+range_checks <- tibble(
+  check = c(
+    "home is either 0 or 1",
+    "goals are non-negative",
+    "goals_conceded are non-negative",
+    "shots are non-negative",
+    "on_target_tagged is non-negative",
+    "passes_accurate does not exceed passes_attempted",
+    "pass_accuracy_pct is between 0 and 100",
+    "pass_share_pct is between 0 and 100",
+    "goals scored equals opponent goals conceded within match"
+  ),
+  failures = c(
+    sum(!team_match$home %in% c(0, 1), na.rm = TRUE),
+    sum(team_match$goals < 0, na.rm = TRUE),
+    sum(team_match$goals_conceded < 0, na.rm = TRUE),
+    sum(team_match$shots < 0, na.rm = TRUE),
+    sum(team_match$on_target_tagged < 0, na.rm = TRUE),
+    sum(team_match$passes_accurate > team_match$passes_attempted, na.rm = TRUE),
+    sum(team_match$pass_accuracy_pct < 0 | team_match$pass_accuracy_pct > 100, na.rm = TRUE),
+    sum(team_match$pass_share_pct < 0 | team_match$pass_share_pct > 100, na.rm = TRUE),
+    NA_integer_
+  )
+)
+
+match_score_check <- team_match |>
+  select(match_id, team_id, opponent_id, goals, goals_conceded) |>
+  inner_join(
+    team_match |>
+      transmute(
+        match_id,
+        opponent_id = team_id,
+        team_id = opponent_id,
+        opponent_goals = goals,
+        opponent_conceded = goals_conceded
+      ),
+    by = c("match_id", "team_id", "opponent_id")
+  ) |>
+  summarise(
+    mismatched_score_pairs = sum(
+      goals != opponent_goals | goals_conceded != opponent_conceded,
+      na.rm = TRUE
+    )
+  )
+
+range_checks$failures[9] <- match_score_check$mismatched_score_pairs
+
+knitr::kable(range_checks, caption = "Logical and range checks")
+```
+
+The final check compares each team's score with the opponent's corresponding record. A zero count indicates that the paired team rows agree on the match score.
+
+## 3.6 Date coverage and match counts over time
+
+```{r 3-6-date-coverage-and-match-counts-10}
+matches_by_month <- team_match |>
+  distinct(match_id, match_date, league) |>
+  mutate(month = floor_date(match_date, "month")) |>
+  count(month, name = "matches")
+
+ggplot(matches_by_month, aes(month, matches)) +
+  geom_col(fill = "#547C9B", width = 25) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b\n%Y") +
+  labs(
+    title = "Matches represented by month",
+    subtitle = "Counts are based on distinct match IDs",
+    x = NULL, y = "Matches"
+  ) +
+  theme_eda
+```
+
+Season schedules are not evenly distributed across calendar months. Month-to-month changes in match counts should therefore be interpreted as schedule coverage, not automatically as changes in league activity or performance.
+
+# 4. Descriptive statistics
+
+## 4.1 Overall numeric summary
+
+```{r 4-1-overall-numeric-summary-11}
+overall_summary <- team_match |>
+  summarise(
+    across(
+      all_of(numeric_vars),
+      list(
+        n = ~ sum(!is.na(.x)),
+        mean = ~ mean(.x, na.rm = TRUE),
+        sd = ~ sd(.x, na.rm = TRUE),
+        median = ~ median(.x, na.rm = TRUE),
+        q1 = ~ quantile(.x, 0.25, na.rm = TRUE),
+        q3 = ~ quantile(.x, 0.75, na.rm = TRUE),
+        min = ~ min(.x, na.rm = TRUE),
+        max = ~ max(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.+)_([^_]+)$"
+  )
+
+knitr::kable(overall_summary, digits = 2, caption = "Expanded descriptive statistics")
+```
+
+The mean and median are both useful. For count variables such as goals and shots, a small number of unusually high values can pull the mean upward. The median and interquartile range provide a more robust description of a typical team-match.
+
+## 4.2 Supplied numeric summary
+
+```{r 4-2-supplied-numeric-summary-12}
+knitr::kable(
+  numeric_summary,
+  digits = 2,
+  caption = "Provided numeric summary: minimum, median, mean, 95th percentile, and maximum"
+)
+```
+
+The supplied summary indicates an average of approximately 1.35 goals per team-match, 11.79 shots, and 4.25 tagged shots on target. Average passing accuracy is approximately 81.55%. The average pass share is exactly 50% by construction because each match's two team shares sum to 100%.
+
+## 4.3 Distribution of goals
+
+```{r 4-3-distribution-of-goals-13}
+ggplot(team_match, aes(goals)) +
+  geom_histogram(binwidth = 1, boundary = -0.5,
+                 fill = "#547C9B", color = "white") +
+  scale_x_continuous(breaks = 0:max(team_match$goals, na.rm = TRUE)) +
+  labs(
+    title = "Distribution of goals scored per team-match",
+    x = "Goals scored", y = "Number of team-match observations"
+  ) +
+  theme_eda
+```
+
+```{r 4-3-distribution-of-goals-14}
+goals_frequency <- team_match |>
+  count(goals, name = "team_matches") |>
+  mutate(percent = 100 * team_matches / sum(team_matches))
+
+knitr::kable(goals_frequency, digits = 2,
+             caption = "Frequency distribution of goals scored")
+```
+
+Goals are a discrete, low-count outcome. A substantial concentration at zero, one, and two goals is typical of football score data. This distribution is not well described by a normal curve; count-based models may be more appropriate if the analysis moves beyond descriptive exploration.
+
+## 4.4 Distribution of shots and tagged shots on target
+
+```{r 4-4-distribution-of-shots-and-tagge-15}
+shot_long <- team_match |>
+  select(shots, on_target_tagged) |>
+  pivot_longer(everything(), names_to = "measure", values_to = "count") |>
+  mutate(
+    measure = recode(
+      measure,
+      shots = "All recorded shots",
+      on_target_tagged = "Tagged shots on target"
+    )
+  )
+
+ggplot(shot_long, aes(count, fill = measure)) +
+  geom_histogram(binwidth = 1, boundary = -0.5, alpha = 0.8,
+                 color = "white") +
+  facet_wrap(~ measure, scales = "free_y", ncol = 1) +
+  scale_fill_manual(values = c("All recorded shots" = "#547C9B",
+                               "Tagged shots on target" = "#C36B4B")) +
+  labs(
+    title = "Shot volume and tagged accuracy counts",
+    x = "Events per team-match", y = "Frequency"
+  ) +
+  theme_eda +
+  theme(legend.position = "none")
+```
+
+```{r 4-4-distribution-of-shots-and-tagge-16}
+shot_efficiency <- team_match |>
+  mutate(
+    tagged_on_target_rate = if_else(shots > 0,
+                                    100 * on_target_tagged / shots,
+                                    NA_real_)
+  ) |>
+  summarise(
+    team_matches = n(),
+    total_shots = sum(shots, na.rm = TRUE),
+    total_tagged_on_target = sum(on_target_tagged, na.rm = TRUE),
+    aggregate_tagged_rate = 100 * total_tagged_on_target / total_shots,
+    median_team_match_rate = median(tagged_on_target_rate, na.rm = TRUE),
+    zero_shot_matches = sum(shots == 0, na.rm = TRUE),
+    zero_shot_on_target_mismatches = sum(shots == 0 & on_target_tagged > 0, na.rm = TRUE)
+  )
+
+knitr::kable(shot_efficiency, digits = 2,
+             caption = "Aggregate and team-match shot-tag summaries")
+```
+
+The aggregate tagged rate weights high-shot matches more heavily than low-shot matches. The median team-match rate instead describes the typical rate among team-matches with at least one recorded shot. These are different estimands and should not be treated as interchangeable.
+
+## 4.5 Passing volume and accuracy
+
+```{r 4-5-passing-volume-and-accuracy-17}
+pass_long <- team_match |>
+  select(passes_attempted, passes_accurate) |>
+  pivot_longer(everything(), names_to = "measure", values_to = "passes") |>
+  mutate(
+    measure = recode(
+      measure,
+      passes_attempted = "Passes attempted",
+      passes_accurate = "Passes accurate"
+    )
+  )
+
+ggplot(pass_long, aes(passes)) +
+  geom_histogram(bins = 35, fill = "#5D8B68", color = "white") +
+  facet_wrap(~ measure, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Distribution of passing counts",
+    x = "Passes per team-match", y = "Frequency"
+  ) +
+  theme_eda
+```
+
+```{r 4-5-passing-volume-and-accuracy-18}
+ggplot(team_match, aes(pass_accuracy_pct)) +
+  geom_histogram(binwidth = 2, boundary = 0,
+                 fill = "#9276A8", color = "white") +
+  labs(
+    title = "Distribution of passing accuracy",
+    x = "Pass accuracy (%)", y = "Number of team-match observations"
+  ) +
+  theme_eda
+```
+
+Passing accuracy is a ratio, not a count. Two teams can have the same accuracy percentage while attempting very different numbers of passes. Any comparison of passing accuracy should therefore be considered alongside passing volume.
+
+# 5. League-level comparisons
+
+## 5.1 Number of matches and teams by league
+
+```{r 5-1-number-of-matches-and-teams-by-19}
+league_coverage <- team_match |>
+  group_by(league) |>
+  summarise(
+    team_matches = n(),
+    matches = n_distinct(match_id),
+    teams = n_distinct(team_id),
+    first_date = min(match_date, na.rm = TRUE),
+    last_date = max(match_date, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(league_coverage, caption = "League coverage and sample sizes")
+```
+
+```{r 5-1-number-of-matches-and-teams-by-20}
+ggplot(league_coverage, aes(league, matches, fill = league)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Number of matches represented by league",
+    x = NULL, y = "Distinct matches"
+  ) +
+  theme_eda
+```
+
+The league samples are not identical in size: Germany has 306 matches, while each of the other four leagues has 380. When comparing totals, account for these different sample sizes. Per-team-match averages are more suitable for descriptive comparisons.
+
+## 5.2 League-level attacking and passing profile
+
+```{r 5-2-league-level-attacking-and-pass-21}
+league_summary <- team_match |>
+  group_by(league) |>
+  summarise(
+    team_matches = n(),
+    avg_goals = mean(goals, na.rm = TRUE),
+    median_goals = median(goals, na.rm = TRUE),
+    avg_goals_conceded = mean(goals_conceded, na.rm = TRUE),
+    avg_shots = mean(shots, na.rm = TRUE),
+    avg_tagged_on_target = mean(on_target_tagged, na.rm = TRUE),
+    avg_passes = mean(passes_attempted, na.rm = TRUE),
+    avg_pass_accuracy = mean(pass_accuracy_pct, na.rm = TRUE),
+    avg_pass_share = mean(pass_share_pct, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(league_summary, digits = 2,
+             caption = "League-level team-match performance averages")
+```
+
+```{r 5-2-league-level-attacking-and-pass-22}
+league_metric_long <- league_summary |>
+  select(league, avg_goals, avg_shots, avg_tagged_on_target,
+         avg_passes, avg_pass_accuracy) |>
+  pivot_longer(-league, names_to = "metric", values_to = "value") |>
+  mutate(
+    metric = recode(
+      metric,
+      avg_goals = "Goals per team-match",
+      avg_shots = "Shots per team-match",
+      avg_tagged_on_target = "Tagged on-target events",
+      avg_passes = "Passes attempted",
+      avg_pass_accuracy = "Pass accuracy (%)"
+    )
+  )
+
+ggplot(league_metric_long, aes(league, value, fill = league)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Performance profile by league",
+    x = NULL, y = "Average per team-match (or percent)"
+  ) +
+  theme_eda +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+The facets use independent y-axis scales because the measures have different units. Compare leagues within each panel, not the visual heights across different panels.
+
+## 5.3 Goal distributions by league
+
+```{r 5-3-goal-distributions-by-league-23}
+ggplot(team_match, aes(league, goals, fill = league)) +
+  geom_boxplot(show.legend = FALSE, outlier.alpha = 0.25) +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Goals scored by league",
+    x = NULL, y = "Goals per team-match"
+  ) +
+  theme_eda
+```
+
+```{r 5-3-goal-distributions-by-league-24}
+ggplot(team_match, aes(goals, color = league)) +
+  stat_ecdf(linewidth = 0.9) +
+  scale_color_manual(values = league_palette) +
+  scale_x_continuous(breaks = 0:8) +
+  labs(
+    title = "Cumulative distribution of goals by league",
+    x = "Goals scored", y = "Cumulative proportion",
+    color = "League"
+  ) +
+  theme_eda
+```
+
+The boxplot emphasizes medians and spread, while the empirical cumulative distribution compares the full distributions. Differences in means can conceal whether a league has more low-scoring matches, a heavier high-scoring tail, or both.
+
+## 5.4 Team-level variation within leagues
+
+```{r 5-4-team-level-variation-within-lea-25}
+team_summary <- team_match |>
+  group_by(league, team_id, team_name) |>
+  summarise(
+    team_matches = n(),
+    goals_per_match = mean(goals, na.rm = TRUE),
+    goals_conceded_per_match = mean(goals_conceded, na.rm = TRUE),
+    goal_difference_per_match = mean(goals - goals_conceded, na.rm = TRUE),
+    shots_per_match = mean(shots, na.rm = TRUE),
+    pass_accuracy = mean(pass_accuracy_pct, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+team_summary |>
+  group_by(league) |>
+  slice_max(goals_per_match, n = 5, with_ties = FALSE) |>
+  arrange(league, desc(goals_per_match)) |>
+  knitr::kable(digits = 2, caption = "Five highest-scoring teams within each league")
+```
+
+```{r 5-4-team-level-variation-within-lea-26}
+ggplot(team_summary,
+       aes(x = reorder(team_name, goals_per_match),
+           y = goals_per_match, color = league)) +
+  geom_point(size = 2.5, show.legend = FALSE) +
+  facet_wrap(~ league, scales = "free_y") +
+  coord_flip() +
+  scale_color_manual(values = league_palette) +
+  labs(
+    title = "Team scoring averages within each league",
+    x = NULL, y = "Goals per team-match"
+  ) +
+  theme_eda
+```
+
+Team averages are based on the available team-match records. This plot is descriptive and does not adjust for strength of schedule, injuries, managerial changes, or other contextual factors.
+
+# 6. Home versus away performance
+
+## 6.1 Supplied home/away summary
+
+```{r 6-1-supplied-home-away-summary-27}
+knitr::kable(
+  home_away_summary,
+  digits = 2,
+  caption = "Provided league-by-venue summary"
+)
+```
+
+## 6.2 Recalculate home/away averages from the primary data
+
+```{r 6-2-recalculate-home-away-averages-28}
+home_away_recalc <- team_match |>
+  group_by(league, venue) |>
+  summarise(
+    team_matches = n(),
+    avg_goals = mean(goals, na.rm = TRUE),
+    avg_shots = mean(shots, na.rm = TRUE),
+    avg_pass_accuracy = mean(pass_accuracy_pct, na.rm = TRUE),
+    avg_pass_share = mean(pass_share_pct, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(home_away_recalc, digits = 2,
+             caption = "Home/away averages recalculated from team-match data")
+```
+
+Recalculating the summary from the primary dataset provides a reproducibility check. Small differences from the supplied summary may result from rounding or different handling of missing observations; large differences would require investigation.
+
+## 6.3 Home-away differences by league
+
+```{r 6-3-home-away-differences-by-league-29}
+home_away_diff <- home_away_recalc |>
+  pivot_longer(
+    cols = starts_with("avg_"),
+    names_to = "metric", values_to = "value"
+  ) |>
+  select(league, venue, metric, value) |>
+  pivot_wider(names_from = venue, values_from = value) |>
+  mutate(home_minus_away = Home - Away)
+
+knitr::kable(home_away_diff, digits = 3,
+             caption = "Home minus away differences by league")
+```
+
+```{r 6-3-home-away-differences-by-league-30}
+ggplot(
+  home_away_diff |> filter(metric %in% c("avg_goals", "avg_shots",
+                                         "avg_pass_accuracy", "avg_pass_share")),
+  aes(league, home_minus_away, fill = league)
+) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(
+    ~ metric, scales = "free_y",
+    labeller = as_labeller(c(
+      avg_goals = "Goals: home − away",
+      avg_shots = "Shots: home − away",
+      avg_pass_accuracy = "Pass accuracy: home − away",
+      avg_pass_share = "Pass share: home − away"
+    ))
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey35") +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Home-away performance gaps by league",
+    x = NULL, y = "Home minus away average"
+  ) +
+  theme_eda
+```
+
+A positive value indicates that the home side has a higher average for that metric. For pass share, the comparison is a share-of-passes proxy: the home side's higher share necessarily corresponds to a lower share for the away side in the same match.
+
+## 6.4 Paired match-level home advantage
+
+Because each match has both a home and an away record, a paired comparison is more informative than treating all home and away rows as unrelated. The next section constructs one row per match and calculates home-minus-away differences.
+
+```{r 6-4-paired-match-level-home-advanta-31}
+match_pairs <- team_match |>
+  select(match_id, league, match_date, venue, goals, shots,
+         passes_attempted, pass_accuracy_pct, pass_share_pct) |>
+  pivot_wider(
+    names_from = venue,
+    values_from = c(goals, shots, passes_attempted,
+                    pass_accuracy_pct, pass_share_pct)
+  ) |>
+  mutate(
+    goal_gap = goals_Home - goals_Away,
+    shot_gap = shots_Home - shots_Away,
+    pass_gap = passes_attempted_Home - passes_attempted_Away,
+    accuracy_gap = pass_accuracy_pct_Home - pass_accuracy_pct_Away,
+    pass_share_gap = pass_share_pct_Home - pass_share_pct_Away
+  )
+
+paired_summary <- match_pairs |>
+  summarise(
+    matches = n(),
+    home_wins = sum(goal_gap > 0, na.rm = TRUE),
+    draws = sum(goal_gap == 0, na.rm = TRUE),
+    away_wins = sum(goal_gap < 0, na.rm = TRUE),
+    home_win_pct = 100 * home_wins / matches,
+    draw_pct = 100 * draws / matches,
+    away_win_pct = 100 * away_wins / matches,
+    mean_goal_gap = mean(goal_gap, na.rm = TRUE),
+    median_goal_gap = median(goal_gap, na.rm = TRUE)
+  )
+
+knitr::kable(paired_summary, digits = 2,
+             caption = "Paired home-versus-away match outcomes")
+```
+
+```{r 6-4-paired-match-level-home-advanta-32}
+match_pairs |>
+  summarise(
+    across(
+      c(goal_gap, shot_gap, pass_gap, accuracy_gap, pass_share_gap),
+      list(mean = ~ mean(.x, na.rm = TRUE),
+           median = ~ median(.x, na.rm = TRUE),
+           sd = ~ sd(.x, na.rm = TRUE))
+    )
+  ) |>
+  pivot_longer(everything(), names_to = "statistic", values_to = "value") |>
+  knitr::kable(digits = 2, caption = "Distribution summaries of paired match gaps")
+```
+
+The paired design controls for the fact that both teams experienced the same match. It does not, by itself, control for team quality or the selection of which teams played at home in a particular fixture.
+
+# 7. Relationships among performance measures
+
+## 7.1 Goals and shots
+
+```{r 7-1-goals-and-shots-33}
+ggplot(team_match, aes(shots, goals, color = league)) +
+  geom_jitter(alpha = 0.35, width = 0.15, height = 0.08) +
+  geom_smooth(method = "lm", se = FALSE, color = "black",
+              linewidth = 0.8) +
+  scale_color_manual(values = league_palette) +
+  labs(
+    title = "Goals scored and shots attempted",
+    subtitle = "Points are team-match observations; black line is a pooled linear trend",
+    x = "Shots", y = "Goals", color = "League"
+  ) +
+  theme_eda
+```
+
+```{r 7-1-goals-and-shots-34}
+goals_shots_cor <- cor.test(
+  team_match$shots, team_match$goals,
+  method = "spearman", exact = FALSE
+)
+
+tibble(
+  method = "Spearman rank correlation",
+  estimate = unname(goals_shots_cor$estimate),
+  p_value = goals_shots_cor$p.value
+) |>
+  knitr::kable(digits = 4, caption = "Association between shots and goals")
+```
+
+A positive association is expected: teams that generate more shots generally have more opportunities to score. However, shot quality is not represented in the supplied team-match table. A team can take many low-probability shots while another creates fewer but better chances.
+
+## 7.2 Goals and tagged shots on target
+
+```{r 7-2-goals-and-tagged-shots-on-targe-35}
+ggplot(team_match, aes(on_target_tagged, goals)) +
+  geom_jitter(alpha = 0.35, color = "#C36B4B",
+              width = 0.12, height = 0.08) +
+  geom_smooth(method = "loess", se = TRUE, color = "black") +
+  labs(
+    title = "Goals and tagged shots on target",
+    x = "Tagged shots on target", y = "Goals scored"
+  ) +
+  theme_eda
+```
+
+This relationship is especially sensitive to the definition and completeness of the event tag. The shot-type audit later in the report helps assess whether goals and tagged accuracy align across different shot categories.
+
+## 7.3 Passing volume and pass share
+
+```{r 7-3-passing-volume-and-pass-share-36}
+ggplot(team_match, aes(passes_attempted, pass_share_pct, color = league)) +
+  geom_point(alpha = 0.35) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  scale_color_manual(values = league_palette) +
+  labs(
+    title = "Passing volume and share of match passes",
+    x = "Passes attempted", y = "Pass share (%)",
+    color = "League"
+  ) +
+  theme_eda
+```
+
+Pass share is mathematically related to passing volume because it is calculated using the team's passes relative to both teams' passes. A strong relationship between these two variables is therefore partly mechanical, not necessarily an independent tactical discovery.
+
+## 7.4 Passing accuracy and attacking output
+
+```{r 7-4-passing-accuracy-and-attacking-37}
+ggplot(team_match, aes(pass_accuracy_pct, goals, color = league)) +
+  geom_jitter(alpha = 0.35, width = 0.15, height = 0.08) +
+  geom_smooth(method = "loess", se = TRUE, color = "black") +
+  scale_color_manual(values = league_palette) +
+  labs(
+    title = "Passing accuracy and goals",
+    x = "Pass accuracy (%)", y = "Goals scored",
+    color = "League"
+  ) +
+  theme_eda
+```
+
+```{r 7-4-passing-accuracy-and-attacking-38}
+ggplot(team_match, aes(pass_accuracy_pct, shots)) +
+  geom_point(alpha = 0.3, color = "#547C9B") +
+  geom_smooth(method = "loess", se = TRUE, color = "#C36B4B") +
+  labs(
+    title = "Passing accuracy and shot volume",
+    x = "Pass accuracy (%)", y = "Shots"
+  ) +
+  theme_eda
+```
+
+Passing accuracy should not automatically be interpreted as attacking quality. Teams may achieve high completion rates through safer, shorter passes, while teams attempting riskier forward passes may have lower accuracy but create more chances.
+
+## 7.5 Correlation matrix
+
+```{r 7-5-correlation-matrix-39}
+cor_data <- team_match |>
+  select(all_of(numeric_vars)) |>
+  drop_na()
+
+cor_matrix <- cor(cor_data, method = "spearman")
+
+cor_long <- as.data.frame(as.table(cor_matrix)) |>
+  rename(variable_x = Var1, variable_y = Var2, rho = Freq)
+
+ggplot(cor_long, aes(variable_x, variable_y, fill = rho)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", rho)), size = 3) +
+  scale_fill_gradient2(
+    low = "#B65E52", mid = "white", high = "#35618D",
+    midpoint = 0, limits = c(-1, 1)
+  ) +
+  coord_equal() +
+  labs(
+    title = "Spearman correlation matrix",
+    subtitle = "Rank-based associations among numeric team-match variables",
+    x = NULL, y = NULL, fill = "Spearman\nrho"
+  ) +
+  theme_eda +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+```
+
+```{r 7-5-correlation-matrix-40}
+cor_pairs <- cor_long |>
+  filter(as.character(variable_x) < as.character(variable_y)) |>
+  arrange(desc(abs(rho)))
+
+knitr::kable(cor_pairs, digits = 3,
+             caption = "Unique pairwise Spearman correlations")
+```
+
+Correlation is a measure of association, not causation. The correlation matrix also includes mathematically linked variables. For example, accurate passes contribute to passing accuracy, and team pass volume contributes to pass share. Those relationships should be interpreted with care.
+
+# 8. Outliers and unusual observations
+
+Outliers are not necessarily errors. In football, a high-scoring match, unusually large shot count, or very high passing total may represent a genuine performance. The purpose of this section is to identify unusual values for review, not to delete them automatically.
+
+## 8.1 IQR-based outlier counts
+
+```{r 8-1-iqr-based-outlier-counts-41}
+iqr_outliers <- map_dfr(numeric_vars, function(v) {
+  x <- team_match[[v]]
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower <- q1 - 1.5 * iqr
+  upper <- q3 + 1.5 * iqr
+
+  tibble(
+    variable = v,
+    q1 = q1,
+    q3 = q3,
+    iqr = iqr,
+    lower_fence = lower,
+    upper_fence = upper,
+    outlier_count = sum(x < lower | x > upper, na.rm = TRUE),
+    outlier_pct = 100 * mean(x < lower | x > upper, na.rm = TRUE)
+  )
+})
+
+knitr::kable(iqr_outliers, digits = 2,
+             caption = "IQR rule: potential univariate outliers")
+```
+
+## 8.2 Boxplots for count measures
+
+```{r 8-2-boxplots-for-count-measures-42}
+count_long <- team_match |>
+  select(goals, goals_conceded, shots, on_target_tagged,
+         passes_attempted, passes_accurate) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value")
+
+ggplot(count_long, aes(variable, value)) +
+  geom_boxplot(fill = "#8BA6B8", outlier.alpha = 0.25) +
+  coord_flip() +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  labs(
+    title = "Spread and potential outliers in count variables",
+    x = NULL, y = "Count per team-match"
+  ) +
+  theme_eda
+```
+
+## 8.3 Highest observed values
+
+```{r 8-3-highest-observed-values-43}
+extreme_team_matches <- team_match |>
+  arrange(desc(goals), desc(shots)) |>
+  select(match_date, league, team_name, opponent_name, venue,
+         goals, goals_conceded, shots, on_target_tagged,
+         passes_attempted, pass_accuracy_pct) |>
+  slice_head(n = 15)
+
+knitr::kable(extreme_team_matches, digits = 2,
+             caption = "Team-match observations with the highest goal totals")
+```
+
+Extreme observations should be checked against original match or event records if they materially affect later conclusions. Do not remove them solely because they exceed an IQR fence.
+
+# 9. Shot-type audit and measurement validity
+
+The shot-type audit separates free-kick shots, open-play shots, and penalties. This matters because a penalty is a different type of scoring opportunity from an open-play attempt, and event tags may be assigned differently across event types.
+
+## 9.1 Audit table
+
+```{r 9-1-audit-table-44}
+shot_audit |>
+  mutate(
+    tagged_accuracy_rate = 100 * tagged_accurate / attempts,
+    goal_per_attempt_rate = 100 * tagged_goals / attempts,
+    goals_without_tag_rate = 100 * goals_without_accurate_tag / attempts
+  ) |>
+  knitr::kable(digits = 2,
+               caption = "Shot-event audit with derived rates")
+```
+
+## 9.2 Attempts and tagged accuracy by shot type
+
+```{r 9-2-attempts-and-tagged-accuracy-by-45}
+ggplot(shot_audit, aes(shot_type, attempts, fill = league)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Shot attempts by type and league",
+    x = NULL, y = "Attempts", fill = "League"
+  ) +
+  theme_eda +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+```{r 9-2-attempts-and-tagged-accuracy-by-46}
+shot_audit_rates <- shot_audit |>
+  mutate(
+    tagged_accuracy_rate = tagged_accurate / attempts,
+    tagged_goal_rate = tagged_goals / attempts
+  ) |>
+  select(league, shot_type, tagged_accuracy_rate, tagged_goal_rate) |>
+  pivot_longer(
+    cols = c(tagged_accuracy_rate, tagged_goal_rate),
+    names_to = "rate", values_to = "proportion"
+  ) |>
+  mutate(
+    rate = recode(
+      rate,
+      tagged_accuracy_rate = "Tagged accurate / attempts",
+      tagged_goal_rate = "Tagged goals / attempts"
+    )
+  )
+
+ggplot(shot_audit_rates,
+       aes(shot_type, proportion, fill = league)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ rate) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_manual(values = league_palette) +
+  labs(
+    title = "Shot accuracy and goal rates by event type",
+    x = NULL, y = "Rate", fill = "League"
+  ) +
+  theme_eda +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+```
+
+The audit shows that penalties are a distinct category and that the tagged-goal counts for penalties align with tagged-accurate counts in the supplied audit. Open-play shots account for most attempts and most goals. A small number of open-play goals appear without an accurate tag in some leagues, which is a reason to treat the accuracy tag as a proxy rather than a flawless outcome definition.
+
+## 9.3 Goals without an accurate tag
+
+```{r 9-3-goals-without-an-accurate-tag-47}
+shot_audit |>
+  group_by(shot_type) |>
+  summarise(
+    attempts = sum(attempts),
+    tagged_accurate = sum(tagged_accurate),
+    tagged_goals = sum(tagged_goals),
+    goals_without_accurate_tag = sum(goals_without_accurate_tag),
+    .groups = "drop"
+  ) |>
+  knitr::kable(caption = "Pooled shot-type audit across leagues")
+```
+
+This audit is an important data-definition check. Before using `on_target_tagged` as a formal response variable or as an input to a model, verify the event-tag logic against the original event data and the provider's event definitions.
+
+# 10. Time-oriented exploration
+
+The dataset includes match dates, so it is possible to examine whether the available records show seasonal patterns. These summaries are descriptive and may reflect the competition calendar, postponements, and uneven match coverage.
+
+## 10.1 Goals by month
+
+```{r 10-1-goals-by-month-48}
+monthly_goals <- team_match |>
+  mutate(month = floor_date(match_date, "month")) |>
+  group_by(month) |>
+  summarise(
+    team_matches = n(),
+    goals_per_team_match = mean(goals, na.rm = TRUE),
+    total_goals = sum(goals, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(monthly_goals, aes(month, goals_per_team_match)) +
+  geom_line(linewidth = 0.8, color = "#35618D") +
+  geom_point(size = 2, color = "#C36B4B") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b\n%Y") +
+  labs(
+    title = "Average goals per team-match by month",
+    x = NULL, y = "Average goals"
+  ) +
+  theme_eda
+```
+
+## 10.2 Monthly averages by league
+
+```{r 10-2-monthly-averages-by-league-49}
+monthly_league <- team_match |>
+  mutate(month = floor_date(match_date, "month")) |>
+  group_by(league, month) |>
+  summarise(
+    goals_per_team_match = mean(goals, na.rm = TRUE),
+    shots_per_team_match = mean(shots, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(monthly_league, aes(month, goals_per_team_match, color = league)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  scale_color_manual(values = league_palette) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b\n%Y") +
+  labs(
+    title = "Monthly scoring averages by league",
+    x = NULL, y = "Goals per team-match", color = "League"
+  ) +
+  theme_eda
+```
+
+Month-level averages can be volatile when a league has few matches in a given month. Consider plotting the number of matches alongside the average before interpreting a spike or decline as a meaningful performance trend.
+
+# 11. Interpretation and key findings
+
+This section provides a structured synthesis of the descriptive patterns. The numerical summaries are calculated from the supplied team-match dataset and should be interpreted within the measurement limits already described.
+
+```{r 11-interpretation-and-key-findings-50}
+overall_key_metrics <- team_match |>
+  summarise(
+    team_matches = n(),
+    matches = n_distinct(match_id),
+    goals_mean = mean(goals, na.rm = TRUE),
+    goals_median = median(goals, na.rm = TRUE),
+    shots_mean = mean(shots, na.rm = TRUE),
+    on_target_mean = mean(on_target_tagged, na.rm = TRUE),
+    pass_accuracy_mean = mean(pass_accuracy_pct, na.rm = TRUE),
+    pass_share_mean = mean(pass_share_pct, na.rm = TRUE)
+  )
+
+league_goal_rank <- league_summary |>
+  arrange(desc(avg_goals)) |>
+  select(league, avg_goals, avg_shots, avg_pass_accuracy)
+
+home_goal_gap <- home_away_diff |>
+  filter(metric == "avg_goals") |>
+  select(league, Away, Home, home_minus_away)
+
+knitr::kable(overall_key_metrics, digits = 2,
+             caption = "Key overall indicators")
+knitr::kable(league_goal_rank, digits = 2,
+             caption = "League ranking by average goals per team-match")
+knitr::kable(home_goal_gap, digits = 3,
+             caption = "Home-away scoring comparison")
+```
+
+### Main descriptive takeaways
+
+- **Scoring is a low-count outcome.** The average is higher than the median, indicating that a smaller number of high-scoring team performances influence the mean.
+- **Shot volume varies considerably.** The distribution and upper tail show that some teams generate substantially more attempts than a typical team-match.
+- **Passing accuracy and passing volume describe different aspects of play.** A high completion percentage does not necessarily mean a team attempted many passes or created more chances.
+- **Home and away comparisons should be paired by match.** The paired match analysis uses the fact that every match contains both a home and away team record.
+- **League averages summarize different competition environments.** They should not be interpreted as isolated causal effects of league membership.
+- **The pass-share variable is a proxy.** Its average of 50% is an arithmetic consequence of the two teams' shares summing to 100% in each match.
+- **The event-tag audit matters.** `on_target_tagged` is not automatically interchangeable with a provider's official shots-on-target statistic.
+
+# 12. Limitations and cautions
+
+1. **Single season:** The dataset represents 2017–18 only. It cannot establish whether the observed patterns persist across seasons.
+2. **Team-match dependence:** Two rows belong to each match. Standard statistical tests that assume every row is independent may understate uncertainty.
+3. **No player-level context:** The supplied analytical table does not describe lineups, substitutions, injuries, or individual player contributions.
+4. **No shot-quality information:** Shot location, body part, defensive pressure, and expected goals are not included in the main team-match file.
+5. **Event-tag definitions:** `on_target_tagged` is based on an event tag. Its validity should be checked against the underlying event definitions.
+6. **Passing data are event-based:** Pass attempts exclude set-piece categories according to the data dictionary. This may not match every external passing statistic.
+7. **Pass share is not possession time:** It measures a team's share of recorded passes, not the percentage of time it controlled the ball.
+8. **League sample sizes differ:** Germany has fewer matches because its league has fewer teams in the season represented.
+9. **Descriptive, not causal:** Differences by league or venue may be associated with team strength, tactics, scheduling, and other unobserved factors.
+10. **Potential source and parsing errors:** Team labels and event classifications were parsed from source data. Team IDs should be preferred for joins and modeling.
+
+# 13. Recommendations for follow-up analysis
+
+The following extensions would strengthen the analysis:
+
+- **Model goals as a count outcome:** Compare Poisson and negative-binomial models, checking overdispersion and fit.
+- **Use a match-aware model:** Include match-level effects or cluster uncertainty by `match_id` because home and away records are paired.
+- **Add team strength:** Include team and opponent effects, prior-season performance, or an Elo-style rating to separate venue effects from team quality.
+- **Improve attacking measures:** Add expected goals, shot locations, shot type, and goalkeeper context if available.
+- **Validate event definitions:** Reconcile tagged shots on target and goals with the original event records and provider documentation.
+- **Use multiple seasons:** Test whether league and home-advantage patterns are stable over time.
+- **Consider rates with denominators:** For example, goals per shot and tagged shots per attempt should be calculated with clear denominator definitions and appropriate handling of zero-shot matches.
+
+# Appendix A. Full data dictionary
+
+```{r appendix-a-full-data-dictionary-51}
+knitr::kable(data_dictionary, caption = "Supplied data dictionary")
+```
+
+# Appendix B. League-by-league shot audit
+
+```{r appendix-b-league-by-league-shot-au-52}
+knitr::kable(shot_audit, caption = "Original shot-type audit data")
+```
+
+# Appendix C. Session information
+
+```{r appendix-c-session-information-53}
+sessionInfo()
+```
