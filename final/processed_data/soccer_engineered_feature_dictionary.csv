@@ -1,0 +1,7 @@
+Feature,Description
+shots_per_100_passes,Shots attempted per 100 recorded passes
+shot_accuracy_pct,Percentage of shots tagged as accurate
+passes_per_shot,Recorded passes divided by shot attempts
+opponent_shots,Shots attempted by the opposing team
+opponent_passes,Passes attempted by the opposing team
+opponent_pass_accuracy_pct,Passing accuracy percentage of the opposing team

@@ -1,0 +1,478 @@
+---
+title: "Feature Engineering for Soccer Goal-Scoring Models"
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+```
+
+
+```{r}
+# Load the cleaned team-match dataset
+local_path <- "processed_data/soccer_team_match_2017_18.csv"
+
+# GitHub fallback
+github_url <- paste0(
+  "https://raw.githubusercontent.com/",
+  "kevinhav/d621/main/final/processed_data/",
+  "soccer_team_match_2017_18.csv"
+)
+
+soccer_data <- read_csv(
+  if (file.exists(local_path)) local_path else github_url,
+  show_col_types = FALSE
+)
+
+dataset_summary <- tibble(
+  Metric = c(
+    "Team-match observations",
+    "Unique matches",
+    "Unique teams",
+    "Original variables",
+    "Leagues"
+  ),
+  Count = c(
+    nrow(soccer_data),
+    n_distinct(soccer_data$match_id),
+    n_distinct(soccer_data$team_id),
+    ncol(soccer_data),
+    n_distinct(soccer_data$league)
+  )
+)
+
+knitr::kable(dataset_summary)
+```
+
+### Data Validation
+
+The cleaned dataset contains 3,652 team-match observations representing 1,826 matches across five European leagues and 98 teams. Each match has exactly two observations, one for each team, and no duplicate team-match combinations or missing values were identified in the original dataset.
+
+These checks confirm that the data is structurally consistent and ready for feature engineering. Maintaining the two-team structure is particularly important because it allows us to incorporate opponent statistics into our analysis.
+
+```{r}
+stopifnot(
+  nrow(soccer_data) == 3652,
+  ncol(soccer_data) == 16,
+  dplyr::n_distinct(soccer_data$match_id) == 1826
+)
+
+cat("GitHub dataset loaded successfully!\n")
+```
+
+```{r}
+# Check for duplicate team-match combinations
+duplicate_count <- soccer_data %>%
+  count(match_id, team_id) %>%
+  filter(n > 1) %>%
+  nrow()
+
+# Check whether each match has exactly two rows
+match_counts <- soccer_data %>%
+  count(match_id)
+
+invalid_matches <- sum(match_counts$n != 2)
+
+# Check missing values
+missing_summary <- soccer_data %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "missing_count"
+  )
+
+print(missing_summary)
+
+stopifnot(
+  duplicate_count == 0,
+  invalid_matches == 0,
+  all(!is.na(soccer_data$goals)),
+  all(soccer_data$goals >= 0)
+)
+```
+
+```{r}
+model_features <- soccer_data %>%
+  mutate(
+    # Shots generated per 100 recorded passes
+    shots_per_100_passes = if_else(
+      passes_attempted > 0,
+      100 * shots / passes_attempted,
+      NA_real_
+    ),
+
+    # Percentage of shots tagged as accurate
+    shot_accuracy_pct = if_else(
+      shots > 0,
+      100 * on_target_tagged / shots,
+      NA_real_
+    ),
+
+    # Average number of passes per shot
+    passes_per_shot = if_else(
+      shots > 0,
+      passes_attempted / shots,
+      NA_real_
+    )
+  )
+
+# Summarize new features
+feature_summary <- model_features %>%
+  select(
+    shots_per_100_passes,
+    shot_accuracy_pct,
+    passes_per_shot
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Feature",
+    values_to = "Value"
+  ) %>%
+  group_by(Feature) %>%
+  summarise(
+    Mean = mean(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(
+  feature_summary,
+  digits = 2,
+  caption = "Summary of Engineered Attacking Features"
+)
+```
+
+### Attacking Feature Summary
+
+The engineered features provide a different perspective on attacking performance by looking at how frequently teams generate shots relative to their passing activity and how accurately those shots are tagged.
+
+- On average, teams generated approximately 2.83 shots per 100 passes, with a median of 2.72. The average tagged shot accuracy was 36.26%, suggesting that a little over one-third of shot attempts were tagged as accurate.
+- Teams also averaged approximately 42.40 passes per shot, although the maximum of 437 indicates that some observations had considerably higher passing activity relative to their shooting attempts.
+- These differences suggest that teams can approach attacking play in different ways, making these features useful candidates for further regression analysis.
+
+```{r}
+# Check zero denominators and missing values
+zero_checks <- model_features %>%
+  summarise(
+    `Team-match rows with zero shots` = sum(shots == 0),
+    `Team-match rows with zero passes` = sum(passes_attempted == 0),
+    `Missing shot accuracy` = sum(is.na(shot_accuracy_pct)),
+    `Missing shots per 100 passes` =
+      sum(is.na(shots_per_100_passes)),
+    `Missing passes per shot` = sum(is.na(passes_per_shot))
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Check",
+    values_to = "Count"
+  )
+
+knitr::kable(
+  zero_checks,
+  caption = "Zero Denominators and Missing Values"
+)
+```
+### Missing Values in Engineered Features
+
+Although the original dataset contains no missing values, two team-match observations recorded zero shots. This resulted in undefined values for shot accuracy and passes per shot, since both calculations require at least one shot attempt.
+
+- These observations were retained rather than removed or assigned arbitrary values. 
+  - No teams recorded zero passes, so shots per 100 passes was calculated for every observation.
+- The missing values will need to be considered during modeling, particularly when comparing models that use different combinations of predictors.
+
+```{r}
+# Prepare opponent statistics from the same dataset
+opponent_stats <- model_features %>%
+  select(
+    match_id,
+    team_id,
+    shots,
+    passes_attempted,
+    pass_accuracy_pct
+  ) %>%
+  rename(
+    opponent_id = team_id,
+    opponent_shots = shots,
+    opponent_passes = passes_attempted,
+    opponent_pass_accuracy_pct = pass_accuracy_pct
+  )
+
+# Match each team with its opponent's statistics
+model_features <- model_features %>%
+  left_join(
+    opponent_stats,
+    by = c("match_id", "opponent_id"),
+    relationship = "one-to-one"
+  )
+
+# Preview
+model_features %>%
+  select(
+    match_id,
+    team_name,
+    opponent_name,
+    shots,
+    opponent_shots,
+    pass_accuracy_pct,
+    opponent_pass_accuracy_pct
+  ) %>%
+  head(10) %>%
+  knitr::kable(digits = 2)
+```
+
+```{r}
+# Confirm the row count has not changed
+stopifnot(
+  nrow(model_features) == nrow(soccer_data)
+)
+
+# Confirm opponent statistics are present
+stopifnot(
+  !any(is.na(model_features$opponent_shots)),
+  !any(is.na(model_features$opponent_passes))
+)
+
+# Check that the opponent's shots match the other team's shots
+opponent_check <- model_features %>%
+  group_by(match_id) %>%
+  summarise(
+    valid_pair = (
+      n() == 2 &&
+      all(team_id %in% opponent_id) &&
+      all(opponent_id %in% team_id) &&
+      sum(home) == 1
+    ),
+    .groups = "drop"
+  )
+
+stopifnot(
+  all(opponent_check$valid_pair),
+  nrow(model_features) == nrow(soccer_data),
+  !any(is.na(model_features$opponent_shots)),
+  !any(is.na(model_features$opponent_pass_accuracy_pct))
+)
+
+cat("Opponent matching and match structure validated.\n")
+```
+
+### Incorporating Opponent Performance
+
+- Since each match includes observations for both teams, we were able to add opponent statistics to provide more context about each team's performance.
+- The new variables include opponent shots, opponent passes, and opponent passing accuracy. 
+  - For example, Arsenal's 27 shots against Leicester City correspond to Leicester City's opponent shot count of 27 in the same match.
+- The opponent matching checks passed, confirming that the additional statistics were assigned consistently without changing the number of observations.
+
+These features may help us explore whether a team's scoring performance is associated with the attacking activity of its opponent, rather than only its own statistics.
+
+```{r}
+engineered_vars <- c(
+  "shots_per_100_passes",
+  "shot_accuracy_pct",
+  "passes_per_shot",
+  "opponent_shots",
+  "opponent_passes",
+  "opponent_pass_accuracy_pct"
+)
+
+feature_quality <- model_features %>%
+  select(all_of(engineered_vars)) %>%
+  pivot_longer(
+    everything(),
+    names_to = "feature",
+    values_to = "value"
+  ) %>%
+  group_by(feature) %>%
+  summarise(
+    missing = sum(is.na(value)),
+    minimum = min(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    maximum = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(feature_quality, digits = 2)
+```
+
+```{r}
+stopifnot(
+  all(
+    is.na(model_features$shot_accuracy_pct) |
+      (model_features$shot_accuracy_pct >= 0 &
+       model_features$shot_accuracy_pct <= 100)
+  ),
+  all(
+    is.na(model_features$shots_per_100_passes) |
+      model_features$shots_per_100_passes >= 0
+  ),
+  all(model_features$opponent_shots >= 0),
+  all(model_features$opponent_passes >= 0)
+)
+
+cat("Engineered feature constraints passed.\n")
+```
+```{r}
+# variables for correlation analysis
+correlation_vars <- c(
+  "goals",
+  "shots",
+  "passes_attempted",
+  "pass_share_pct",
+  "pass_accuracy_pct",
+  "shots_per_100_passes",
+  "shot_accuracy_pct",
+  "passes_per_shot",
+  "opponent_shots"
+)
+
+# Calculate Spearman correlations
+feature_correlations <- model_features %>%
+  select(all_of(correlation_vars)) %>%
+  cor(
+    use = "pairwise.complete.obs",
+    method = "spearman"
+  )
+
+# table of correlations with goals
+goal_correlations <- tibble(
+  Feature = rownames(feature_correlations),
+  Spearman_R = feature_correlations[, "goals"]
+) %>%
+  filter(Feature != "goals") %>%
+  arrange(desc(abs(Spearman_R)))
+
+# Display results
+knitr::kable(
+  goal_correlations,
+  digits = 2,
+  caption = "Spearman Correlations with Goals Scored"
+)
+```
+
+### Relationships Between Engineered Features and Goals
+
+The correlation analysis suggests that shooting-related variables have stronger relationships with goals scored than the passing measures examined.
+
+Tagged shot accuracy had the strongest observed correlation with goals (0.49), followed by total shots (0.34) and shots per 100 passes (0.25). In comparison, pass share had a weaker positive correlation of 0.14.
+
+This is interesting because our project examines whether traditional statistics like passing activity adequately explain goal scoring. The initial results suggest that generating shots and having a higher proportion of accurately tagged shots may be more closely associated with scoring than simply having a larger share of passes.
+
+Additional checks between predictors identified a strong correlation between pass share and passes attempted (0.89), as well as a perfect inverse rank correlation between shots per 100 passes and passes per shot (−1.00). These relationships are important to consider during modeling because including highly related predictors can introduce redundancy and multicollinearity.
+
+However, these are individual correlations and do not account for the combined effects of other variables. Regression modeling will help determine whether these relationships remain meaningful after controlling for additional match characteristics.
+
+```{r}
+model_features %>%
+  select(
+    shots_per_100_passes,
+    shot_accuracy_pct,
+    passes_per_shot
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "feature",
+    values_to = "value"
+  ) %>%
+  filter(!is.na(value), is.finite(value)) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(
+    bins = 30,
+    fill = "steelblue",
+    color = "white"
+  ) +
+  facet_wrap(~ feature, scales = "free") +
+  labs(
+    title = "Distribution of Engineered Features",
+    x = "Feature value",
+    y = "Team-match observations"
+  ) +
+  theme_minimal()
+```
+### Distribution of Engineered Features
+
+The distributions show that most teams generated approximately two to four shots per 100 passes, with relatively few observations at the extremes.
+
+Tagged shot accuracy was more widely distributed, with most observations concentrated around 25% to 50%. This suggests that shooting accuracy varies considerably across team-match performances.
+
+Passes per shot showed a noticeably right-skewed distribution, with most observations concentrated at lower values and a small number of unusually high values. This may reflect matches where teams attempted many passes but generated relatively few shots.
+
+These patterns will be important when evaluating regression assumptions, particularly whether extreme observations influence model estimates.
+
+```{r}
+output_dir <- "processed_data"
+
+# Create output folder if it does not exist
+dir.create(
+  output_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+output_path <- file.path(
+  output_dir,
+  "soccer_model_features.csv"
+)
+
+# Confirm output folder exists
+stopifnot(dir.exists(output_dir))
+
+# Save the modeling-ready dataset
+readr::write_csv(model_features, output_path)
+
+# Verify
+exported_data <- readr::read_csv(
+  output_path,
+  show_col_types = FALSE
+)
+
+stopifnot(
+  nrow(exported_data) == nrow(model_features),
+  ncol(exported_data) == ncol(model_features)
+)
+
+cat("Saved to:", normalizePath(output_path), "\n")
+```
+
+```{r}
+feature_dictionary <- tibble::tribble(
+  ~Feature, ~Description,
+  "shots_per_100_passes",
+  "Shots attempted per 100 recorded passes",
+  "shot_accuracy_pct",
+  "Percentage of shots tagged as accurate",
+  "passes_per_shot",
+  "Recorded passes divided by shot attempts",
+  "opponent_shots",
+  "Shots attempted by the opposing team",
+  "opponent_passes",
+  "Passes attempted by the opposing team",
+  "opponent_pass_accuracy_pct",
+  "Passing accuracy percentage of the opposing team"
+)
+
+knitr::kable(
+  feature_dictionary,
+  caption = "Engineered Feature Definitions"
+)
+
+readr::write_csv(
+  feature_dictionary,
+  file.path(output_dir,
+            "soccer_engineered_feature_dictionary.csv")
+)
+```
+
