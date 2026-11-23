@@ -955,8 +955,7 @@ eval_pp_updated = eval_pp |>
     P_TARGET_FLAG = eval_log,
     TARGET_FLAG   = ifelse(eval_log > 0.5, 1, 0),
     pred_amt      = exp(predict(linear_train_model2, newdata = eval_pp)),
-    TARGET_AMT    = ifelse(TARGET_FLAG == 1, pred_amt, 0)
-  ) |>
+    TARGET_AMT    = ifelse(TARGET_FLAG == 1, pred_amt, 0)) |>
   dplyr::select(-pred_amt)
 
 eval_pp_updated |> write_csv("hw4_eval_predictions.csv")

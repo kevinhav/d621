@@ -90,12 +90,46 @@ tibble(
 train = train |>
   mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
                 ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
+<<<<<<< HEAD
+=======
+         across(!where(is.numeric), as.factor))
+
+evaluation = evaluation |>
+  mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
+                ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
          across(!where(is.numeric), as.factor))
 
 evaluation = evaluation |>
   mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
                 ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
          across(!where(is.numeric), as.factor))
+```
+
+## Summary Statistics
+
+The table below shows summary statistics for all numeric predictors and
+the two target variables in the training dataset. These give a quick
+sense of what a typical value looks like for each variable, and how
+widely the values spread. Some variables, such as `TARGET_AMT` and
+`OLDCLAIM`, have a mean that is noticeably larger than the median (for
+example, \$1504.32 vs. \$0.00). This suggests they are right-skewed. We
+also see that variables are on very different scales, from small counts
+like `CLM_FREQ` to dollar amounts like `HOME_VAL` that reach into the
+hundreds of thousands. Because of the skew and scale differences, some
+transformations and scaling will likely help the models fit better. We
+discuss these in the Data Preparation section.
+
+```{r summary-stats}
+#| label: summary-stats
+
+train |>
+  dplyr::select(where(is.numeric)) |>
+  describe() |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  dplyr::select(Variable, mean, sd, median, se) |>
+  kable(digits = 2)
 ```
 
 ## Summary Statistics
@@ -230,13 +264,20 @@ further in the Data Preparation section.
 
 ```{r target-amt-dist}
 #| label: target-amt-dist
+<<<<<<< HEAD
 #| fig-cap: "Distribution of TARGET_AMT"
+=======
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 train |>
   filter(TARGET_AMT >0) |>
   ggplot(aes(x = TARGET_AMT)) +
   geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+<<<<<<< HEAD
   labs(x = NULL, y = "Count", title = "") +
+=======
+  labs(x = NULL, y = "Count", title = "TARGET_AMT Distribution") +
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
   theme_minimal(base_size = 9.6)
 ```
 
@@ -327,8 +368,12 @@ there are no missing values after imputation.
 
 # Generate imputation method
 imputation_fit = missRanger(as.data.frame(
+<<<<<<< HEAD
   train |> dplyr::select(-TARGET_FLAG, -TARGET_AMT)), keep_forests = TRUE,
   verbose = FALSE)
+=======
+  train |> dplyr::select(-TARGET_FLAG, -TARGET_AMT)), keep_forests = TRUE)
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 # Use imputation method on training dataset
 train_imputed = imputation_fit$data |>
@@ -424,7 +469,10 @@ the log transformation will be used in the models.
 
 ```{r target-amt-process}
 #| label: target-amt-process
+<<<<<<< HEAD
 #| fig-cap: "Variable Distributions after Transformation"
+=======
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 train_pp |>
   filter(TARGET_AMT > 0) |>
@@ -830,7 +878,11 @@ highest. AIC is calculated on the training data, so it is a supporting
 check rather than a test-set measure.
 
 ```{r logit-metrics}
+<<<<<<< HEAD
 #| label: logit-metrics
+=======
+#| label: logit-eval
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 results <- rbind(m1_train$metrics, m1_test$metrics,
                  m2_train$metrics, m2_test$metrics,
@@ -883,7 +935,10 @@ get_lm_metrics <- function(model, data, model_name, set_name) {
   data.frame(
     Model  = model_name,
     Set    = set_name,
+<<<<<<< HEAD
     MSE   = mean((actual - pred)^2),
+=======
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
     RMSE   = sqrt(mean((actual - pred)^2)),
     R2     = 1 - sse / sst,   # R-squared in dollars
     F_stat = f_stat
@@ -906,12 +961,21 @@ the models missed any pattern, the Q-Q plots check whether the errors
 are roughly bell-shaped, and the leverage plots check for unusually
 influential points. For both models, the residuals are centered around 0
 with a fairly even spread, and the Q-Q plots follow the line closely
+<<<<<<< HEAD
 apart from the tails. No points appear to have an outsized influence.
 Because the diagnostics and the performance metrics are very similar for
 both models, Model 2 is selected since it achieves the same results with
 fewer predictors. Note that these checks only show that the model’s
 assumptions are reasonable. The low R² still means both models explain
 little of the variation in crash cost.
+=======
+apart from the tails \[adjust to match your plots\]. No points appear to
+have an outsized influence. Because the diagnostics and the performance
+metrics are very similar for both models, Model 2 is selected since it
+achieves the same results with fewer predictors. Note that these checks
+only show that the model’s assumptions are reasonable. The low R² still
+means both models explain little of the variation in crash cost.
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 ```{r lm-residuals}
 #| label: lm-residuals
@@ -984,7 +1048,10 @@ average up, the predictions tend to run low.
 
 ```{r eval-target-amt}
 #| label: eval-target-amt
+<<<<<<< HEAD
 #| fig-cap: "Distributions of Evaluated TARGET_AMT"
+=======
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
 
 eval_pp_updated |>
   filter(TARGET_FLAG == 1) |>
@@ -1031,6 +1098,7 @@ than about how costly it will be.
 *This section is auto-populated by re-echoing the code chunks above when
 rendering to PDF; no additional content is needed here unless
 supplementary code is included.*
+<<<<<<< HEAD
 
 ```{r}
 #| label: appendix-code
@@ -1038,3 +1106,5 @@ supplementary code is included.*
 #| echo: true
 #| eval: false
 ```
+=======
+>>>>>>> 38462f733cb4af79285d103de3c1096e74cde2e4
