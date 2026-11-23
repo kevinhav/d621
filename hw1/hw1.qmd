@@ -80,7 +80,7 @@ tibble(
 
 ## Summary Statistics
 
-It is often useful to check a summary of descriptive statistics on the data set to get a initial understanding of the data. We're looking for things like high standard deviations, large differences between means and medians (indicating skew), or another anomalous points.
+We check the summary statistics for high standard deviations, large differences between means and medians (indicating skew), or other anomalous points.
 
 ```{r}
 #| label: summary-stats
@@ -95,20 +95,14 @@ describe(train) |>
 With this quick glance, we make the below observations; we'll keep this in mind later when we decide what transformations are necessary to appropriately scale the data.
 
 - The variables throughout this dataset have different orders of magnitude
-- Most variables are complete (non-null) with the exceptions of `TEAM_BASERUN_SB`, `TEAM_BASERUN SO`,`TEAM_BASERUN_CS`, `TEAM_BATTING_HBP`, and `TEAM_PITCHING_SO`.
+- Most variables are complete (non-null) with the exceptions of `TEAM_BASERUN_SB`, `TEAM_BATTING_SO`,`TEAM_BASERUN_CS`, `TEAM_BATTING_HBP`, `TEAM_PITCHING_SO`, and `TEAM_FIELDING_DP`.
 - We see a very high degree of skew in `TEAM_PITCHING_H` and `TEAM_PITCHING_SO`
-- We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero 
-
-<!-- (It seems unrealistic that any values be 0 over a full season. I believe these should be treated as missing values.)
-(I also think that some of the maximum values are extremely high and are thus typos. For example, `TEAM_PITCHING_H` and `TEAM_PITCHING_SO` both exceeding 10,000.) -->
+- We see the minimum of most attributes is zero, indicating these should all be positive metrics floored at zero
+- The maximums of `TEAM_PITCHING_H` (`r format(max(train$TEAM_PITCHING_H), big.mark = ",")`) and `TEAM_PITCHING_SO` (`r format(max(train$TEAM_PITCHING_SO, na.rm = TRUE), big.mark = ",")`) are impossible for a real team: a 162 game season has only about 4,400 outs, so a pitching staff cannot record 19,000 strikeouts. We believe these are recording errors rather than real extreme seasons. Because we cannot recover the true values, we limit their influence on the model in Data Preparation.
 
 ## Distributions
 
-Summary statistics will highlight unusual numbers, but visualizing the distributions will allow us to intuit the shape of the variables.
-
-Since these are all continuous quantitative numbers, we visualize all of them as KDE plots.
-
-Our goal here is to identify any potential skewed variables, or otherwise unusual distributions.
+We plot the shape of each variable to identify any potential skewed variables, or otherwise unusual distributions. Most are roughly bell-shaped; the pitching variables have long right tails driven by the errors noted above, and `TEAM_BATTING_SO` has two peaks.
 
 ```{r}
 #| label: fig-distributions
@@ -131,7 +125,7 @@ ggplot(train_long, aes(x = value)) +
 
 ## Boxplots
 
-Boxplots allow us to more easily spot outliers as distinct points, and is a good visual to pair with distribution plots.
+The boxplots confirm that the most extreme outliers are in the pitching variables (hits, strikeouts, and walks allowed), with `TEAM_FIELDING_E` also showing a long upper tail.
 
 ```{r}
 #| label: fig-boxplots
@@ -150,7 +144,7 @@ ggplot(train_long, aes(x = "", y = value)) +
 
 ## Correlation with Target
 
-Of course, we would like to know what features are correlated with our target variable. A quick look here will help us plan our feature selection.
+We would like to know what features are correlated with our target variable to help plan our feature selection.
 
 ```{r}
 #| label: fig-correlation
@@ -176,9 +170,11 @@ corrplot(cor_matrix,
          diag = FALSE)
 ```
 
+No single variable is strongly correlated with wins; the strongest is total hits (`TEAM_BATTING_H`, 0.39), followed by doubles (0.29) and walks (0.23), while fielding errors (`TEAM_FIELDING_E`, -0.18) is the most negative. These look like the most useful predictors. Some relationships point in a surprising direction: home runs allowed (`TEAM_PITCHING_HR`, 0.19) and walks allowed (`TEAM_PITCHING_BB`, 0.12) are *positively* related to wins, and strikeouts by our pitchers (`TEAM_PITCHING_SO`) is slightly negative. `TEAM_PITCHING_HR` is also nearly identical to `TEAM_BATTING_HR` (0.97), which suggests the pitching columns partly reflect the overall scoring level of a season rather than pitching quality alone. We should be cautious about reading the pitching coefficients literally.
+
 ## Missing Data
 
-Missing data is critical to handle in any machine learning task. We made observations on specific variables earlier, but here we can visualize the proporption of missingness.
+Six variables have missing values. `TEAM_BATTING_HBP` is missing for over 90% of teams and `TEAM_BASERUN_CS` for about a third; the rest are missing for less than 15%.
 
 ```{r}
 #| label: fig-missing
@@ -214,13 +210,14 @@ Our exploratory data analysis has revealed some key insights on this dataset tha
 
 We must now address our strategy for handling missing values.
 
-- `TEAM_BATTING_HBP` is almost always null; any imputation we perform will skew the entire feature to that imputation. We will simply drop it, as it's >90% null.
-  - We should address that `TEAM_BATTING_HBP` is significantly null (over 70%) and has a low correlation with the target variable, so we may consider dropping it from the model entirely when we get to feature selection
+- `TEAM_BATTING_HBP` is almost always null (>90%); any imputation we perform will skew the entire feature to that imputation, and it has a low correlation with the target variable. We will simply drop it.
 - `TEAM_BASERUN_CS` has a high degree of right-skew, so we will impute with the median, which is less sensitive to outliers
 - `TEAM_BASERUN_SB` is slightly skewed so we will again impute with the median
 - `TEAM_PITCHING_SO` has some extreme outliers but is otherwise normally distributed and centered, so we will impute with the mean
 - `TEAM_BATTING_SO` has dual modes, so we will use k-nearest neighbors imputation to fill in the missing values, which will take into account the other variables in the dataset.
 - `TEAM_FIELDING_DP` has a small number of missing values, so we will impute with the mean given the roughly normal distribution.
+
+Each of these methods assumes the values are missing at random, i.e. a team with a missing value is otherwise like the teams around it. If instead the gaps come from older seasons that simply did not record these statistics, filling them with typical values pretends those teams played like an average modern team, which blurs the relationship between that variable and wins and pulls its coefficient toward zero. This matters most for `TEAM_BASERUN_CS`, where a third of the values are filled in. As a partial check, teams missing `TEAM_BASERUN_CS` average `r round(mean(train$TARGET_WINS[is.na(train$TEAM_BASERUN_CS)]), 1)` wins versus `r round(mean(train$TARGET_WINS[!is.na(train$TEAM_BASERUN_CS)]), 1)` for the rest, so the missingness itself does not appear to be tied to winning. If it were, adding a flag for whether each value was missing would let the model capture that difference, and would be our next step.
 
 
 ```{r}
@@ -292,7 +289,7 @@ plot_predictors_vs_target(
 
 This gives us a better picture of what variables may required transformation to better fit our linear model. We will break it down by **Outliers**, **Skewness**, and **Non-linear relationships**.
 
-- Outliers: `TEAM_PITCHING_H`, `TEAM_PITCHING_SO`, and `TEAM_PITCHING_BB` have extreme outliers that will need to be addressed. We will cap these at the third standard deviation to prevent them from unduly affecting the model.
+- Outliers: `TEAM_PITCHING_H`, `TEAM_PITCHING_SO`, and `TEAM_PITCHING_BB` have extreme outliers that will need to be addressed. We will cap these at the third standard deviation to prevent them from unduly affecting the model. This assumes the mean and standard deviation are reasonable references, but the erroneous values themselves inflate both: the cap for `TEAM_PITCHING_H` lands near `r format(round(mean(train$TEAM_PITCHING_H) + 3 * sd(train$TEAM_PITCHING_H), -2), big.mark = ",")` hits, still well above any real season. Capping therefore limits the leverage of these errors rather than correcting them; a stricter ceiling based on what is possible in a season, or treating these values as missing, would be reasonable alternatives.
 - Skewness: Besides outliers, most variables are approximately normally distributed. For now we will leave them as-is to prefer simplicity in our model.
 - Non-linear relationships: Our scatterplot does not show any obvious non-linear relationships, but given `TEAM_FIELDING_E` has a long tail, and we see a slight curve in the scatterplot, we may consider a log transformation to see if it improves the linearity of the relationship.
 
@@ -360,7 +357,7 @@ plot(lm_all_feat)
 
 Let's start with the plot. We see that our residuals vs fitted values is quite close to a horizontal line, which indicates our model is not biased. The Q-Q residuals tells us "how normally distributed are our residuals?", with the diagonal dotted line representing a perfect normal distribution. We see that our residuals are not perfectly normal, but they are close enough to be acceptable (some deviation at the tails is expected for a real world dataset).
 
-Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which is not an impressive model. This means only 33.01% of the variance in wins is explained by our model. Comparing our RMSE to the baseline, we see our model has an RMSE of 12.89, which is improved over the baseline of 15.7. 
+Now, reviewing the model summary, we see our adjusted R2 value is 0.3301, which is not an impressive model. This means only 33.01% of the variance in wins is explained by our model. Comparing our RMSE (the square root of the mean squared error, which puts it in units of wins) to the baseline, we see our model has an RMSE of 12.89, which is improved over the baseline of 15.7.
 
 In summary, this basic linear model with all features is not a good model. While it is slightly better than the naive mean model, we should explore further to find a better model.
 
@@ -381,7 +378,9 @@ enframe(vif(lm_all_feat), name = "Term", value = "VIF") |>
   kable(digits = 2)
 ```
 
-As expected, the home run features have a very high VIF, indicating they are highly collinear. We also see that `TEAM_PITCHING_BB` and `TEAM_BATTING_BB` have a similar relationship with a VIF > 5, so we will drop `TEAM_PITCHING_BB`  and `TEAM_PITCHING_HR` from our second model.
+As expected, the home run features have a very high VIF, indicating they are highly collinear. We also see that `TEAM_PITCHING_BB` and `TEAM_BATTING_BB` have a similar relationship with a VIF > 5, so we will drop `TEAM_PITCHING_BB` and both home run variables, `TEAM_PITCHING_HR` and `TEAM_BATTING_HR`, from our second model.
+
+Dropping `TEAM_BATTING_HR` as well is a deliberately aggressive choice. Because the two home run variables are nearly identical, we wanted to see how the model performs with the pair removed entirely, rather than assuming which side to keep. Home runs are an obvious driver of scoring, so if this costs fit, it tells us one of the pair should stay.
 
 ```{r}
 #| label: model-2-pruning
@@ -401,7 +400,7 @@ par(mfrow = c(2, 2))
 plot(lm_pruned)
 ```
 
-We do not see a significant improvement in our metrics with this feature selection, but at least our model is simpler with no downsides, having removed the multicollinear features. We will explore one more model with a more robust null value imputation, advanced feature selection, and regularization
+We do not see an improvement in our metrics with this feature selection; adjusted R2 falls slightly, from 0.33 to 0.31. The model is simpler, having removed the multicollinear features, but the drop suggests that removing home runs entirely discarded real signal, and that only `TEAM_PITCHING_HR` should go. We will explore one more model with a more robust null value imputation and automated feature selection.
 
 ## Model 3 - Informed Preprocessing
 
@@ -466,7 +465,7 @@ plot(lm_backward)
 
 Backward elimination only removes `TEAM_PITCHING_HR`, stopping at 13 of the 14 predictors. This agrees with our Model 2 pruning: `TEAM_PITCHING_HR` was the redundant half of its collinear pair with `TEAM_BATTING_HR`, so the algorithm converges on the same conclusion we reached manually with VIF, though it keeps `TEAM_PITCHING_BB` and `TEAM_BATTING_2B`, which we might have been tempted to drop by hand.
 
-Reviewing the metrics, our more robust preprocessing has improved the model materially. Adjusted R2 is 0.3792, versus ~0.31 for Model 1 and Model 2, and RMSE is 12.41, down from 12.89. The residual plots confirm that our residuals are evenly distributed, and all assumptions of linear regresison are still met - expected, as we did not transform the features for this model.
+Reviewing the metrics, our more robust preprocessing has improved the model materially. Adjusted R2 is 0.3792, versus 0.33 for Model 1 and 0.31 for Model 2, and RMSE is 12.41, down from 12.89. The F-statistic is also the highest of the three (`r round(summary(lm_backward)$fstatistic[1], 1)`, versus `r round(summary(lm_all_feat)$fstatistic[1], 1)` and `r round(summary(lm_pruned)$fstatistic[1], 1)`). All three models are significant overall (p < 0.001), so the F-statistic confirms that each model beats the mean-only baseline, but it does not by itself tell us which is best. Since backward elimination removed only one variable, we can separate the two changes: the full model fit on the KNN-imputed data, before any elimination, already has an adjusted R2 of `r round(summary(lm_full_m3)$adj.r.squared, 4)`. Nearly all of the improvement therefore comes from the imputation, not from feature selection. This tells us the data needed better handling of its missing values, most likely `TEAM_BASERUN_CS`, where filling a third of the values with a single median flattened the variable. The residual plots look much like Model 1's; we discuss their limitations under Residual Diagnostics below.
 
 Let's now analyze the model results more deeply.
 
@@ -477,8 +476,12 @@ The coefficients should be assessed by two measures; relative magnitude, and dir
 While all of our backwards elimination selected features are statistically significant, we make the below observations regarding some of the more interesting coefficients;
 
 - `TEAM_FIELDING_E` has the largest coefficient by a significant margin, and is negatively correlated with target wins. This tells us that fielding errors is a significant contributor towards losses, which is intuitive and easily explained. A team looking to improve their win rate should first focus on minimizing fielding errors.
-- `TEAM_FIELDING_DP` represents double plays, where a fielding team gets two outs in the same play, generally considered very favorable. However, our model has assigned a *negative* correlation, indicating that double plays are associated with losses more than wins.
-- `TEAM_BATTING_3B` has the highest *positive* correlation with wins. Interestingly, our model has it as even higher than home runs (`TEAM_BATTING_HR`), although considering difference is within the error ranges, this is a good example of not taking the coefficient values too literally. Batting generaly shows a positive correlation, as expected, with the exception of double bases which is negative.
+- `TEAM_FIELDING_DP` represents double plays, where a fielding team gets two outs in the same play, generally considered very favorable. However, our model has assigned a *negative* correlation, indicating that double plays are associated with losses more than wins. A likely explanation is opportunity: a team can only turn a double play when opposing runners are on base, so teams whose pitchers allow more baserunners get more chances. `TEAM_FIELDING_DP` is therefore partly a measure of weak pitching rather than good fielding.
+- `TEAM_BATTING_3B` has the highest *positive* correlation with wins. Interestingly, our model has it as even higher than home runs (`TEAM_BATTING_HR`), although considering difference is within the error ranges, this is a good example of not taking the coefficient values too literally. Batting generaly shows a positive correlation, as expected, with the exception of double bases which is negative. Doubles are already counted within total hits (`TEAM_BATTING_H`), so this coefficient is the effect of doubles *after* hits and home runs are accounted for; we believe the negative sign is an artifact of that overlap rather than a real effect.
+- Two other signs are unexpected. `TEAM_BASERUN_CS` (caught stealing) is positive. In Models 1 and 2, where it was filled with the median, it is negative as expected; it only flips after KNN imputation. Since a third of its values are imputed, the positive sign most likely reflects how KNN filled those values from teams with similar baserunning, linking it to `TEAM_BASERUN_SB` (more attempts mean more of both), rather than a real benefit of being caught. This makes it the least trustworthy estimate. `TEAM_PITCHING_H` (hits allowed) is also positive, but this is the variable containing the recording errors we capped, and it overlaps strongly with `TEAM_BATTING_H` (VIF ~7), so we do not read anything into its sign. The remaining signs match expectations: walks and strikeouts at bat, walks allowed, and strikeouts by our pitchers all point the way we would expect.
+- Across models, the negative signs for doubles and double plays appear in all three, so they are a consistent feature of the data rather than a quirk of one model. Hits allowed is also positive in Model 1, but becomes negative (and insignificant) in Model 2 once walks allowed and home runs are removed, which supports reading its sign as a product of overlap between variables.
+
+We keep this model despite these signs because our goal is to predict wins, and these variables still improve accuracy on held-out data (see Model Selection). The cost is that individual coefficients should be read as predictive weights, not as advice; for example, a team should not try to turn fewer double plays.
 
 ```{r}
 #| label: model-3-coefficients
@@ -494,7 +497,7 @@ summary(lm_backward)$coefficients |>
 
 ### Multicollinearity
 
-Our best model still has some degree of multicolinearity between features as indicated by VIF scores > 5. However, the key thing is that the very tightly coupled, pair-wise features have been removed. As evidenced from our improved R2 values, multicollinear features still contribute meaningful signal in the model, which is why our step feature selection kept them. The very correlated pair features `TEAM_BATTING_HR` and `TEAM_PITCHING_HR` have been excluded from Model 2 and 3 as reasoned previously.
+Our best model still has some degree of multicolinearity between features as indicated by VIF scores > 5. However, the key thing is that the very tightly coupled, pair-wise features have been removed. As evidenced from our improved R2 values, multicollinear features still contribute meaningful signal in the model, which is why our step feature selection kept them. Of the very correlated pair `TEAM_BATTING_HR` and `TEAM_PITCHING_HR`, Model 2 excluded both and Model 3 excludes only `TEAM_PITCHING_HR`, as reasoned previously.
 
 A further improvement would be to apply some form of regularization to the model, such as lasso or ridge regressions. These regressions include a regularization hyperparameter that can be tuned to shrink collinear coeffficients to reduce the impact of the multicolinearity.
 
@@ -517,9 +520,9 @@ list(
 
 ### Residual Diagnostics
 
-When analyzing residuals, we are concerned with obvious non-linear patterns that indicate homoscedasticity or some non-linearity in the feature-target correlations. Both of these are visual indicators that we could then further investigate.
+When analyzing residuals, we are concerned with obvious non-linear patterns that indicate heteroscedasticity or some non-linearity in the feature-target correlations. Both of these are visual indicators that we could then further investigate.
 
-Throughout all models, the residuals have appeared to be quite reasonable, and as such we can conclude that general linear models are appropriate for this data. The errors are well distributed with no obvious patterns.
+Throughout all models, the residuals vs fitted plots show no obvious patterns, so a linear model is a reasonable fit for this data. However, the assumptions are not perfectly met. The Q-Q plot shows heavy tails (`r sum(abs(rstandard(lm_backward)) > 3)` teams have standardized residuals beyond $\pm$ 3, more than a normal distribution would produce), and the residuals vs leverage plot shows a few influential points, though none exceed a Cook's distance of 0.5. In practice, this means the p-values and standard errors are likely somewhat optimistic, and the model will miss badly on a small number of unusual teams. The point predictions are still reasonable for typical teams, but we would not trust them as much at the extremes.
 
 ```{r}
 #| label: fig-residuals
@@ -662,7 +665,9 @@ tibble(
   kable(digits = 3)
 ```
 
-Model 3 wins on both holdout RMSE and holdout R2, and its train/holdout gap is smaller than Model 1 or Model 2's, suggesting it generalizes rather than just overfitting the training data. We select Model 3 as our final model.
+Model 3 wins on both holdout RMSE and holdout R2, and its train/holdout gap is smaller than Model 1 or Model 2's, suggesting it generalizes rather than just overfitting the training data.
+
+We also considered whether to accept slightly worse performance for a model that makes more sense. Model 3 has the most overlap between variables and four counterintuitive signs (doubles, double plays, caught stealing, and hits allowed). Model 2 has less overlap and only two (doubles and double plays), so it is the easier model to explain. If the goal were to explain what drives wins, we would prefer Model 2 and accept its weaker accuracy. Because the task is to predict wins for the evaluation teams, we select Model 3 as our final model, with the caveat from the Coefficient Discussion that its coefficients are predictive weights rather than explanations.
 
 ### Predictions on Evaluation Data
 
@@ -702,11 +707,23 @@ head(predictions) |>
   kable()
 ```
 
+The table above shows the first six predictions. The full set of `r nrow(predictions)` predictions is listed in the appendix and is included with this submission as `moneyball-predictions.csv`.
+
 # Conclusion
 
-Starting with data exploration and a note on the base rates set up our expectations and gave us a baseline for our models. Using visualizations, we were able to understand the data more thoroughly which helped inform our preprocessing and feature selection methods. Iterating through multiple models allowed us to find continually improve our model and identify areas of improvement at each step. Evaluating the models comprehensively by considering R2, coefficients, RMSEs, and residual analysis allowed us to be confident our model was appropriate and our process effective.
+Starting with data exploration and a note on the base rates set up our expectations and gave us a baseline for our models. Using visualizations, we were able to understand the data more thoroughly which helped inform our preprocessing and feature selection methods. Iterating through multiple models allowed us to find continually improve our model and identify areas of improvement at each step. Evaluating the models comprehensively by considering R2, coefficients, RMSEs, and residual analysis allowed us to be confident our model was appropriate and our process effective, while also showing where its limits are.
 
-We selected Model 3, a simple multiple-regression model that used backwards elimination feature selection, as well as KNN imputation as our best option, confirmed by holdout validation against Models 1 and 2. This model is decent compromise of complexity and fit, but we believe further improvements could be made by introducing regularization.
+We selected Model 3, a simple multiple-regression model that used backwards elimination feature selection, as well as KNN imputation as our best option, confirmed by holdout validation against Models 1 and 2. Most of its gain came from the improved imputation. This model is decent compromise of complexity and fit for prediction, though several of its coefficients should not be interpreted on their own. We believe further improvements could be made by introducing regularization and by treating the impossible pitching values as missing rather than capping them.
+
+# Appendix: Full Predictions
+
+```{r}
+#| label: predictions-full
+
+predictions |>
+  kable(digits = 1, longtable = TRUE, booktabs = TRUE) |>
+  kable_styling(latex_options = c("repeat_header"), font_size = 8)
+```
 
 # Appendix: R Code
 
@@ -718,6 +735,3 @@ _This section re-echoes every code chunk above, without re-executing any of it, 
 #| echo: true
 #| eval: false
 ```
-
-<!-- Scratch check, not part of the write-up: is TEAM_PITCHING_BB collinear
-with the other predictors? Remove before final submission. -->
