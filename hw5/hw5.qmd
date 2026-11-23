@@ -4,7 +4,7 @@ subtitle: "DATA 621 -- Business Analytics and Data Mining"
 author:
   - name: Kevin Havis
   - name: Michael Drake
-  - name: Rebecca Bronsteain
+  - name: Rebecca Bronstein
   - name: Aaliyah John-Harry
 date: today
 format:
@@ -13,8 +13,9 @@ format:
     number-sections: true
     fig-width: 7
     fig-height: 4.5
+    fig-pos: "H"
 execute:
-  echo: true
+  echo: false
   warning: false
   message: false
 ---
@@ -47,6 +48,8 @@ ratings and label appeal.
 
 # Data Exploration
 
+We first load both data sets. We will drop the index to ensure we do not accidentally use it in our feature set. The goal of data exploration is to inform ourselves of the characteristics of the dataset, discover important relationships, and get a general idea of what preprocessing steps may be necessary.
+
 ```{r load-data}
 #| label: load-data
 
@@ -62,6 +65,8 @@ train <- train |> select(-INDEX)
 
 ## Size and Structure
 
+We have a ~12,800 row data set with 15 columns: the target, twelve chemical properties of the wine, and two marketing variables, `LabelAppeal` (a score from -2 to 2) and `STARS` (an expert rating from 1 to 4). All variables are numeric.
+
 ```{r data-structure}
 #| label: data-structure
 dim(train)
@@ -70,6 +75,11 @@ glimpse(train)
 ```
 
 ## Summary Statistics
+
+We check the spread of each variable for skew, outliers, and anomalous values. Two things stand out:
+
+- Roughly a fifth to a quarter of the values in most chemical variables are negative (for example, `r round(100 * mean(train$Chlorides < 0, na.rm = TRUE))`% of `Chlorides`), which is impossible for a concentration. These are too common to be typos; the values look as though they were centered or otherwise transformed before we received them. We treat them as relative measures rather than errors.
+- `STARS` is missing for `r format(sum(is.na(train$STARS)), big.mark = ",")` wines (`r round(100 * mean(is.na(train$STARS)))`%), far more than any other variable.
 
 ```{r summary-stats}
 #| label: fig-summary-stats
@@ -128,7 +138,13 @@ bind_rows(
   kable(digits = 3)
 ```
 
+`TARGET` ranges from 0 to 8 cases with a mean of about 3. The most important feature is the spike at zero: `r format(sum(train$TARGET == 0), big.mark = ",")` wines (21%) sold no cases, but only `r sum(train$TARGET == 1)` sold one case. A Poisson distribution with a mean of 3 would predict only about 5% zeros, and more ones than zeros. This suggests the data contains two groups: wines that distributors never buy, and wines that are bought, whose counts are roughly bell-shaped around 4.
+
+The dispersion table supports this. Poisson regression assumes the variance equals the mean. Overall, the variance (3.71) is only slightly above the mean (3.03), and only because of the zeros; among wines that were purchased, the variance (1.55) is less than half the mean (3.85), so the data is *underdispersed*. Negative binomial regression only handles variance above the mean, so we expect it to add little here, while a zero-inflated model, which treats the zeros as a separate group, should help.
+
 ## Distributions of Predictors
+
+The chemical variables are symmetric, sharply peaked, and centered near zero with long tails on both sides, consistent with the transformation noted above. `AcidIndex` is right-skewed (median 8, maximum 17). `STARS` and `LabelAppeal` are discrete scales.
 
 ```{r distributions}
 #| label: fig-distributions
@@ -170,6 +186,10 @@ corrplot(cor_matrix,
          diag = FALSE)
 ```
 
+Only three variables are meaningfully correlated with the target: `STARS` (0.56), `LabelAppeal` (0.36), and `AcidIndex` (-0.25). Both marketing variables point in the expected direction: better ratings and more appealing labels go with more cases sold. Every chemical property has a correlation below 0.1 in magnitude, so we expect them to contribute little. The predictors are also nearly uncorrelated with each other, so multicollinearity is unlikely to be a problem. Note that the `STARS` correlation is computed only over rated wines; the unrated wines are discussed next.
+
+Following the assignment's hint, we compare the average target for wines where each variable is missing versus observed.
+
 ```{r target-by-missing}
 #| label: target-by-missing
 
@@ -189,6 +209,8 @@ train |>
   kable(digits = 3)
 ```
 
+Missingness in `STARS` is one of the strongest signals in the data. Unrated wines average 1.18 cases against 3.69 for rated wines, and `r round(100 * mean(train$TARGET[is.na(train$STARS)] == 0))`% of unrated wines sold nothing, compared with 20% of 1-star wines and none at 3 or 4 stars. A plausible explanation is that wines the experts did not review get little attention from distributors. Missingness in the chemical variables, by contrast, changes the average by at most about 0.1 cases, so it carries no real signal.
+
 ## Missing Data
 
 ```{r missing-data}
@@ -207,18 +229,25 @@ ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
   labs(x = NULL, y = "Proportion missing")
 ```
 
-_Discuss what the exploration reveals: the shape and dispersion of `TARGET` relative to Poisson
-assumptions, notable predictor distributions, correlations with the target, and which variables
-have meaningful missingness (recall the hint that missingness itself, e.g. of `STARS`, may be
-predictive)._
+Apart from `STARS`, the chemical variables are missing for between 3% and 10% of wines.
+
+Our exploratory data analysis has revealed some key insights on this dataset that we must address in our modeling:
+
+- The target has far more zeros than a Poisson distribution allows and is underdispersed otherwise, so we expect standard Poisson and negative binomial models to underpredict zeros, and we will try zero-inflated models
+- Missing `STARS` values are highly predictive and should be kept as information rather than imputed away
+- Missing chemical values carry no signal and can be imputed simply
+- `AcidIndex` is skewed and may benefit from a transformation
+- Only the two marketing variables and `AcidIndex` look strongly related to sales; the chemical properties are likely to have small effects
 
 # Data Preparation
 
 ## Missingness Flags and Imputation
 
-_Describe the imputation strategy. Given the assignment's hint, consider retaining a missingness
-flag for `STARS` (and any other variable) as a predictor in its own right rather than only
-imputing it away._
+We must now address our strategy for handling missing values.
+
+- `STARS`: rather than imputing a typical rating, we treat "unrated" as its own category. We add a flag, `STARS_NA`, and set the missing ratings to 0. Filling them with a typical rating (the median is 2) would claim that unrated wines sell like 2-star wines, when in fact they sell less than 1-star wines.
+- Chemical variables: we impute with the median, which is less sensitive to the long tails we saw. Because their missingness carries no signal, we do not add flags for them. Median imputation assumes the values are missing at random; since wines with and without these values sell almost identically, that assumption looks reasonable here.
+- The medians are learned from the training data and reused for the evaluation data and the holdout split, so no information leaks from the data we predict on.
 
 ```{r missing-flags-impute}
 #| label: missing-flags-impute
@@ -251,8 +280,11 @@ cat("Remaining missing values:", is.na(train_imputed) |> sum())
 
 ## Feature Transformations
 
-_Describe any bucketing, log/sqrt/Box-Cox transforms, or derived variables and the rationale for
-each._
+We make the following transformations:
+
+- `AcidIndex` is strictly positive (minimum 4) and right-skewed, so we log transform it.
+- `STARS` and `LabelAppeal` are bucketed into categories (`STARS_f`, `LabelAppeal_f`). As numbers, they assume every extra star or label point changes sales by the same proportion. As buckets, each level gets its own effect, which lets us check whether that assumption holds. This gives us two feature sets, numeric and bucketed, which form the basis of our pairs of models below.
+- We leave the chemical variables as they are. They are already symmetric, and because they contain negative values, log, square root, and Box-Cox transforms are not possible. With correlations near zero, we also saw little to gain from combining them into ratios.
 
 ```{r transformations}
 #| label: transformations
@@ -284,11 +316,11 @@ f_bucketed <- TARGET ~ . - STARS - STARS_NA - LabelAppeal
 
 # Build Models
 
+For each model family we build two versions. Model 1 uses every predictor, with `STARS` and `LabelAppeal` as numbers plus the `STARS_NA` flag; it is our baseline. Model 2 uses the bucketed ratings, followed by backward elimination by AIC: we start with all features, remove the least informative one, refit, and repeat until removing another feature no longer improves AIC. We chose this automated approach because the exploration gave us no strong reason to drop any particular chemical variable by hand.
+
 ## Poisson Regression Models
 
 ### Poisson Model 1
-
-_Describe the variable selection rationale for this model._
 
 ```{r poisson-1}
 #| label: poisson-1
@@ -297,6 +329,8 @@ _Describe the variable selection rationale for this model._
 pois_1 <- glm(f_numeric, family = poisson, data = train_model)
 summary(pois_1)
 ```
+
+The residual deviance (13,807 on 12,779 degrees of freedom) is close to its degrees of freedom, so the model fits reasonably overall. The strongest effects are the ones we expected from exploration. Poisson coefficients act multiplicatively on the expected number of cases: each additional star raises expected sales by about 21% ($e^{0.189}$), being unrated roughly halves them ($e^{-0.651} = 0.52$), and each point of label appeal adds about 17%. `AcidIndex` has a strong negative effect. The chemical variables have small coefficients; several are statistically significant, but with nearly 13,000 wines even tiny effects can be.
 
 ### Poisson Model 2
 
@@ -309,9 +343,13 @@ pois_2 <- glm(f_bucketed, family = poisson, data = train_model) |>
 summary(pois_2)
 ```
 
+Backward elimination removes `FixedAcidity`, `CitricAcid`, `ResidualSugar`, and `Density`, all of which had large p-values in Model 1. The bucketed ratings show that the numeric model's constant 21% step per star was a simplification. Compared with unrated wines, 1-star wines sell about 2.2 times as many cases, 2 stars 3.0 times, 3 stars 3.4 times, and 4 stars 3.8 times. The effect is monotonic, but the biggest jump is from unrated to 1 star, and each further star adds less. `LabelAppeal` is similarly monotonic. AIC improves from 45,781 to 45,654, so the extra flexibility is worth its additional parameters.
+
 ## Negative Binomial Regression Models
 
 ### Negative Binomial Model 1
+
+The negative binomial models use the same two feature sets as the Poisson models, so that any difference between them comes from the distribution alone.
 
 ```{r nb-1}
 #| label: nb-1
@@ -329,7 +367,13 @@ nb_2 <- MASS::glm.nb(formula(pois_2), data = train_model)
 summary(nb_2)
 ```
 
-## (Optional) Zero-Inflated Models
+Both negative binomial models give the same results as their Poisson counterparts: the coefficients agree to three decimal places and the AIC is about 2 higher, the cost of one extra parameter. The dispersion parameter theta is around 40,000, and the fit stopped at its iteration limit while still increasing it. As theta grows without bound, the negative binomial becomes the Poisson distribution, which is what happened here.
+
+This is what exploration predicted. The negative binomial adds a parameter for variance *above* the mean, but our target is underdispersed once the zeros are set aside, so the best it can do is collapse back to Poisson. The assignment suggests changing the input variables when this happens. Our two negative binomial models already use different inputs and both collapse the same way, because the issue is the shape of the target rather than the choice of predictors. We instead address the actual source of the problem, the excess zeros, with zero-inflated models.
+
+## Zero-Inflated Models
+
+A zero-inflated model has two parts: a logistic model that predicts whether a wine is a "structural zero" that distributors never buy, and a count model for how many cases are bought otherwise. The count part uses the terms selected for Poisson Model 2. For the zero part we chose the variables manually: `STARS_NA`, since 61% of unrated wines sold nothing; `AcidIndex`, the strongest chemical signal; and `LabelAppeal`.
 
 ```{r zero-inflated}
 #| label: zero-inflated
@@ -349,6 +393,8 @@ zinb <- zeroinfl(zi_formula, data = train_model, dist = "negbin")
 summary(zinb)
 ```
 
+The zero part confirms the role of `STARS`: being unrated multiplies the odds of being a wine that is never bought by about 58 ($e^{4.06}$), and a higher `AcidIndex` also raises them. Once the zeros are modeled separately, most chemical variables in the count part lose their significance (`Chlorides`, both sulfur dioxide measures, `pH`, and `Sulphates`). This suggests that part of what they did in the Poisson models was help explain the zeros. As before, the zero-inflated negative binomial (ZINB) collapses to the zero-inflated Poisson (ZIP), with theta in the millions and the same coefficients, for the same reason.
+
 ## Multiple Linear Regression Models
 
 ### Linear Model 1
@@ -362,6 +408,8 @@ par(mfrow = c(2, 2))
 plot(lm_1)
 ```
 
+The linear model explains about 54% of the variance in cases sold (adjusted R2 0.536). Its coefficients are in cases rather than proportions: each additional star adds about 0.78 cases and each point of label appeal about 0.46. However, a linear model ignores that the target is a count: it can predict fractional or negative sales and has no way to represent the spike at zero. The residual plots show the parallel bands typical of a discrete target, so the normality and constant-variance assumptions hold only approximately.
+
 ### Linear Model 2
 
 ```{r lm-2}
@@ -374,16 +422,26 @@ par(mfrow = c(2, 2))
 plot(lm_2)
 ```
 
+With bucketed ratings and backward elimination, adjusted R2 rises slightly to 0.539. Unlike the Poisson version, elimination keeps `Density`, though it is only marginally significant. The bucketed star effects in cases (1.4, 2.4, 3.0, and 3.7 more cases than unrated wines) tell the same story of diminishing gains as Poisson Model 2.
+
 ## Coefficient Discussion
 
-_Discuss whether coefficient signs and magnitudes make sense across model types (Poisson vs.
-negative binomial vs. linear), noting cases where the sign or magnitude of a predictor (e.g. `pH`)
-differs across models, per the assignment's example. Flag and discuss any counterintuitive
-coefficients and whether the variable is retained._
+As the assignment notes, the variables we can reason about most directly are the number of stars and the label appeal, and both behave as expected in every model:
+
+- `STARS` is positive and strongly significant in all models, and the bucketed versions show a monotonic increase from unrated to 4 stars. Being unrated (`STARS_NA`) is strongly negative in the count models, and in the zero-inflated models it is the main driver of a wine never being bought. In the ZIP count part, 1 star is no different from unrated; the penalty for being unrated has moved almost entirely into the zero part. In other words, an unrated wine is much less likely to be bought, but if it is bought, it sells about like a 1-star wine.
+- `LabelAppeal` is positive and monotonic in every count and linear model, consistent with its theoretical effect.
+
+Comparing magnitudes across model types, the Poisson and linear coefficients agree once we account for scale. A Poisson coefficient is a proportional change, so multiplying it by the average of about 3 cases gives the approximate change in cases: 0.189 x 3.03 = 0.57 cases per star in Poisson Model 1 versus 0.78 in Linear Model 1, and 0.48 versus 0.46 for label appeal. The negative binomial coefficients are identical to the Poisson ones, as discussed above.
+
+The chemical variables have small effects whose signs are mostly consistent across models. `VolatileAcidity` (associated with a vinegar taste) and `AcidIndex` are negative everywhere, and `Alcohol` is positive everywhere. `pH`, the assignment's example, is slightly negative and only marginally significant in both the Poisson (p = 0.09) and linear (p = 0.06) models, and essentially zero (p = 0.995) in the ZIP model. We read this as `pH` having no reliable effect rather than a real change in direction.
+
+One coefficient is counterintuitive. In the zero part of the zero-inflated models, `LabelAppeal` is *positive*, which suggests a more appealing label makes a wine more likely to never be bought. The data explains it: the share of wines selling zero cases is flat across label appeal levels (about 20% at -2 and 22% at 2), while the number of cases sold rises steeply. The count part attributes a large effect to label appeal, and the zero part compensates so that the predicted share of zeros stays roughly level instead of falling. Label appeal drives *how many* cases a distributor buys, not *whether* they buy, and its net effect on expected sales is still strongly positive: the ZIP model's average prediction rises from about 1.5 cases at a label appeal of -2 to 4.3 cases at 2. We keep it in the zero part because removing it worsens the fit (AIC rises by about 250), but we would not read its zero-part coefficient on its own.
 
 # Select Models
 
 ## Dispersion Check
+
+Before comparing models, we formally test what we saw in exploration: whether the data is over- or underdispersed, whether the negative binomial improves on Poisson, and whether zero inflation does.
 
 ```{r dispersion-check}
 #| label: dispersion-check
@@ -409,7 +467,13 @@ cat("LR statistic:", round(lr_stat, 3),
 vuong(pois_2, zip)
 ```
 
+- The Pearson dispersion statistic is about 0.88 for all four Poisson and negative binomial models, confirming mild underdispersion. One consequence for inference is that Poisson standard errors are slightly too large, so the p-values are somewhat conservative; if anything, we are understating significance rather than overstating it.
+- The likelihood ratio test of negative binomial against Poisson gives a statistic of 0 (p = 0.5): the extra parameter adds nothing.
+- The Vuong test strongly favors the zero-inflated Poisson over Poisson Model 2 (z = -41.9, p < 0.001), even after the AIC and BIC corrections that penalize its extra parameters.
+
 ## Multicollinearity
+
+We check the variance inflation factor (VIF) for each Model 1. A VIF above 5 indicates a high degree of multicollinearity.
 
 ```{r vif}
 #| label: vif
@@ -426,7 +490,15 @@ list(
   kable(digits = 2)
 ```
 
+Every VIF is below 3. The highest belong to `STARS` and `STARS_NA`, which is expected since `STARS` is 0 whenever the flag is 1. Multicollinearity is not a concern, so the coefficients are stable and can be interpreted individually.
+
 ## Model Comparison
+
+To compare the models, we use three criteria:
+
+- **AIC** for the count models, which rewards fit while penalizing extra parameters. The linear models' AIC is shown but is not comparable, because it is based on a continuous normal density rather than probabilities of whole counts.
+- **Mean squared error (MSE) and mean absolute error (MAE) on a holdout set.** We hold back 20% of the training data, fit each model's specification on the other 80%, and score it on the held-back wines. This shows which model works on data it has not seen. The imputation medians are again learned from the 80% only.
+- **Predicted zero rate** compared with the observed rate, which checks whether a model captures the spike at zero.
 
 ```{r model-comparison}
 #| label: model-comparison
@@ -486,12 +558,17 @@ cat("Observed zero rate:", round(mean(train_model$TARGET == 0), 3))
 
 ## Final Model Selection
 
-_State which count regression model is selected as final and justify the choice against the
-criteria discussed above (AIC, average squared error, parsimony, interpretability). Note that a
-count regression model must be selected for deployment even if a linear model performs
-comparably or better._
+The zero-inflated Poisson is the best count model on every criterion. Its AIC (41,710) is about 3,900 lower than the best standard Poisson model, it has the lowest holdout MSE (1.620) and MAE (0.960), and it predicts zeros at almost exactly the observed rate (0.209 against 0.214). The standard Poisson and negative binomial models predict only about 11% zeros, half the true rate. The ZINB matches the ZIP exactly but uses one more parameter, so for parsimony we prefer the ZIP. Its training MSE of 1.666 (an average error of about 1.3 cases) compares with a baseline of 1.93 cases for always predicting the average.
+
+We also considered whether to accept slightly worse performance for a simpler model. Poisson Model 2 is a single equation and easier to explain than a two-part model. However, the ZIP's improvement is not slight: it is the only model that represents the wines that are never bought, which is 21% of the data and the most important pattern we found. The two-part structure is also useful to a manufacturer in its own right, because it separates *whether* a wine gets bought (driven mostly by being rated) from *how many* cases are bought (driven by stars and label appeal).
+
+The linear models perform reasonably, with holdout MSE close to the Poisson models (1.668 for Linear Model 2 against 1.648 for Poisson Model 2), and their coefficients are easy to explain in cases. We do not prefer them, however: they can predict negative or fractional sales, cannot represent the zeros, and are beaten on holdout error by Poisson Model 2 and the zero-inflated models.
+
+To make inferences from the selected model, we exponentiate its coefficients. In the count part, $e^{\beta}$ is the multiplicative change in expected cases *for wines that are bought*; for example, a 4-star wine sells about 46% more cases than an unrated wine that is bought ($e^{0.382}$). In the zero part, $e^{\beta}$ is the multiplicative change in the odds of a wine never being bought. Because of the underdispersion noted above, the standard errors are slightly conservative. We select the **zero-inflated Poisson** as our final model.
 
 # Predictions on Evaluation Data
+
+Now that the zero-inflated Poisson is confirmed as our best model, we run the evaluation dataset through it, imputing with the training data's medians rather than the evaluation data's own.
 
 ```{r predictions}
 #| label: predictions
@@ -516,7 +593,21 @@ head(predictions) |>
   kable(digits = 3)
 ```
 
+For each wine we report the expected number of cases (`TARGET_EXPECTED`) and that value rounded to a whole number of cases (`TARGET`). The table above shows the first six predictions. The full set of `r format(nrow(predictions), big.mark = ",")` predictions is included with this submission as `wine-predictions.csv`.
+
+# Conclusion
+
+Exploration showed that the number of cases sold has two parts: a large group of wines that distributors never buy, and a roughly bell-shaped count for the rest. The expert rating, and especially whether a wine was rated at all, along with label appeal, explain most of what can be predicted; the chemical properties add little. Because the data is underdispersed, the negative binomial models collapsed to Poisson, while the zero-inflated Poisson, which models the never-bought wines directly, was the best model on AIC, holdout error, and the share of zeros.
+
+For the manufacturer, the practical message is that getting a wine rated matters most for whether distributors buy it at all, while stars and label design drive how many cases they buy. Further improvements could come from trying other variables in the zero part of the model, or from models designed for underdispersed counts.
+
 # Appendix: R Code
 
-_This section is auto-populated by re-echoing the code chunks above when rendering to PDF; no
-additional content is needed here unless supplementary code is included._
+_This section re-echoes every code chunk above, without re-executing any of it, for reproducibility._
+
+```{r}
+#| label: appendix-code
+#| ref.label: !expr knitr::all_labels()
+#| echo: true
+#| eval: false
+```
