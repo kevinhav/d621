@@ -883,6 +883,7 @@ get_lm_metrics <- function(model, data, model_name, set_name) {
   data.frame(
     Model  = model_name,
     Set    = set_name,
+    MSE   = mean((actual - pred)^2),
     RMSE   = sqrt(mean((actual - pred)^2)),
     R2     = 1 - sse / sst,   # R-squared in dollars
     F_stat = f_stat
@@ -905,12 +906,12 @@ the models missed any pattern, the Q-Q plots check whether the errors
 are roughly bell-shaped, and the leverage plots check for unusually
 influential points. For both models, the residuals are centered around 0
 with a fairly even spread, and the Q-Q plots follow the line closely
-apart from the tails \[adjust to match your plots\]. No points appear to
-have an outsized influence. Because the diagnostics and the performance
-metrics are very similar for both models, Model 2 is selected since it
-achieves the same results with fewer predictors. Note that these checks
-only show that the model’s assumptions are reasonable. The low R² still
-means both models explain little of the variation in crash cost.
+apart from the tails. No points appear to have an outsized influence.
+Because the diagnostics and the performance metrics are very similar for
+both models, Model 2 is selected since it achieves the same results with
+fewer predictors. Note that these checks only show that the model’s
+assumptions are reasonable. The low R² still means both models explain
+little of the variation in crash cost.
 
 ```{r lm-residuals}
 #| label: lm-residuals

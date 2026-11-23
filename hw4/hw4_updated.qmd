@@ -1,0 +1,1037 @@
+---
+title: "Homework #4: Auto Insurance -- Crash Probability and Cost"
+subtitle: "DATA 621 -- Business Analytics and Data Mining"
+author:
+  - name: Kevin Havis
+  - name: Michael Drake
+  - name: Rebecca Bronsteain
+  - name: Aaliyah John-Henry
+date: today
+format:
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.5
+    fig-pos: "H"
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(corrplot)
+library(psych)
+library(car)
+library(caret)
+library(pROC)
+library(kableExtra)
+library(tidytext)
+library(missRanger)
+library(MASS)
+library(car)
+library(Metrics)
+library(pROC)
+
+set.seed(313)
+
+theme_set(theme_minimal())
+```
+
+# Introduction
+
+In this assignment we build two families of models on auto insurance
+customer data: (1) binary logistic regression models predicting
+`TARGET_FLAG`, whether a customer will crash their car, and (2) multiple
+linear regression models predicting `TARGET_AMT`, the cost of the crash
+given that one occurs.
+
+# Data Exploration
+
+```{r load-data}
+#| label: load-data
+
+train = read_csv("data/insurance-training-data.csv")
+evaluation = read_csv("data/insurance-evaluation-data.csv")
+
+train = train |> dplyr::select(-INDEX)
+evaluation = evaluation |> dplyr::select(-INDEX)
+```
+
+## Size and Structure
+
+The training dataset contains 8161 observations, 23 predictors, and 2
+target variables. Of the 23 predictors, 13 are numeric and 10 are
+categorical. Variables such as `INCOME` and `BLUEBOOK` are currently
+coded as characters due to leading \$. These are transformed to numeric
+variables for use in the models.
+
+```{r data-structure}
+#| label: data-structure
+
+tibble(
+  Variable = names(train),
+  Type     = map_chr(train, ~ class(.x)[1]),
+  Example  = map_chr(train, ~ paste(head(.x, 3), collapse = ", "))) |>
+  kable()
+```
+
+```{r clean-fields}
+#| label: clean-fields
+
+train = train |>
+  mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
+                ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
+         across(!where(is.numeric), as.factor))
+
+evaluation = evaluation |>
+  mutate(across(c(INCOME, HOME_VAL, BLUEBOOK, OLDCLAIM), 
+                ~ as.numeric(str_replace_all(.x, "[^0-9.]", ""))),
+         across(!where(is.numeric), as.factor))
+```
+
+## Summary Statistics
+
+The table below shows summary statistics for all numeric predictors and
+the two target variables in the training dataset. These give a quick
+sense of what a typical value looks like for each variable, and how
+widely the values spread. Some variables, such as `TARGET_AMT` and
+`OLDCLAIM`, have a mean that is noticeably larger than the median (for
+example, \$1504.32 vs. \$0.00). This suggests they are right-skewed. We
+also see that variables are on very different scales, from small counts
+like `CLM_FREQ` to dollar amounts like `HOME_VAL` that reach into the
+hundreds of thousands. Because of the skew and scale differences, some
+transformations and scaling will likely help the models fit better. We
+discuss these in the Data Preparation section.
+
+```{r summary-stats}
+#| label: summary-stats
+
+train |>
+  dplyr::select(where(is.numeric)) |>
+  describe() |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  dplyr::select(Variable, mean, sd, median, se) |>
+  kable(digits = 2)
+```
+
+## Distributions
+
+The density and box plots below show the distributions of all the
+numeric predictors. The two target variables are left out here and are
+discussed separately. The plots show that the predictors have quite
+different shapes. Some, like `AGE`, are roughly symmetric, while others,
+like `BLUEBOOK`, are right-skewed. A few variables also have a large
+spike at zero. Because many models work best when predictors are fairly
+symmetric, transformations may help improve the fit.
+
+```{r distributions}
+#| label: fig-distributions
+#| fig-cap: "Distributions of Numeric Variables"
+
+train_long_num = pivot_longer(train, cols = where(is.numeric),
+                              names_to = "variable", values_to = "value")
+
+train_long_num |>
+  filter(!variable %in% c("TARGET_AMT", "TARGET_FLAG")) |>
+  ggplot(aes(x = value)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
+```
+
+```{r}
+#| label: fig-boxplots
+#| fig-cap: "Boxplots of Predictor and Target Variables"
+
+train_long_num |>
+  filter(!variable %in% c("TARGET_AMT", "TARGET_FLAG")) |>
+  ggplot(aes(x = "", y = value)) +
+  geom_boxplot(fill = "#3a86d4", colour = "black",
+               outlier.colour = "black", linewidth = 0.4) +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(x = NULL, y = NULL, title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6) +
+  coord_flip()
+```
+
+## Categorical Variables
+
+The bar charts below show the distributions of the categorical
+predictors, which gives a general idea of what categories are most and
+least common, as well as how many categories each predictor has. Most
+predictors, such as `PARENT1` and `REVOKED`, have an uneven distribution
+that's dominated by one or a few categories. Other predictors, such as
+`SEX`, are more evenly split. Categories with few customers may be hard
+for a model to learn from, so we may need to combine some of them later.
+
+```{r categorical}
+#| label: fig-categorical
+#| fig-cap: "Bar charts of Categorical Variables"
+
+train_long_chr = pivot_longer(train, cols = !where(is.numeric),
+                              names_to = "variable", values_to = "value")
+
+train_long_chr |>
+  count(variable, value, name = "count") |>
+  ggplot(aes(x = reorder_within(value, count, variable), y = count)) +
+  geom_col(fill = "#3a86d4", colour = "white") +
+  scale_x_reordered() +
+  scale_y_continuous(n.breaks = 4,
+                     labels = scales::label_number(scale_cut = scales::cut_short_scale())) +
+  coord_flip() +
+  facet_wrap(~ variable, scales = "free", ncol = 4) +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
+```
+
+## TARGET_FLAG Distribution
+
+The table below shows the distribution of the target variable
+`TARGET_FLAG`, where 1 means the customer was in a crash and 0 means
+they were not. Roughly three out of four customers (73.62%) did not have
+a crash, while about one in four (26.38%) did. This imbalance matters
+for modeling because a model that simply predicted “no crash” for
+everyone would be right about 74% of the time, so accuracy alone can be
+misleading. We will need to look at other measures, such as sensitivity
+and precision, when judging how well the models identify crashes.
+
+```{r target-flag-dist}
+#| label: target-flag-dist
+
+train |>
+  group_by(TARGET_FLAG) |>
+  summarize(n = n()) |>
+  mutate(pct = round(n/sum(n)*100, 2)) |>
+  kable()
+```
+
+## TARGET_AMT Distribution
+
+The density plot below shows the distribution of the target variable
+`TARGET_AMT`, which is the cost of a crash. Customers who did not crash
+have a cost of \$0, so those observations are removed from this plot,
+since our goal is to predict the cost for customers who were in an
+accident. The distribution is highly right-skewed, with most crashes
+cost less than \$10,000, while a small number are very expensive.
+Because those few large values can have a strong influence on a model, a
+transformation such as a log transform may help. This is discussed
+further in the Data Preparation section.
+
+```{r target-amt-dist}
+#| label: target-amt-dist
+#| fig-cap: "Distribution of TARGET_AMT"
+
+train |>
+  filter(TARGET_AMT >0) |>
+  ggplot(aes(x = TARGET_AMT)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  labs(x = NULL, y = "Count", title = "") +
+  theme_minimal(base_size = 9.6)
+```
+
+## Correlation with Targets
+
+The figure below shows the correlations between all numeric predictors
+and the two target variables. This helps us see whether any predictors
+overlap with each other (collinearity), and which predictors may be
+useful for predicting `TARGET_FLAG` and `TARGET_AMT`. The strongest
+correlations between predictors are `INCOME` and `HOME_VAL`, followed by
+`OLDCLAIM` and `CLM_FREQ`. This makes sense, since higher earners tend
+to own more expensive homes, and customers with more claims tend to have
+larger total claim amounts. The strongest correlations between a
+predictor and a target are between `TARGET_FLAG` and both `MVR_PTS` and
+`CLM_FREQ`, each at 0.22. This is fairly weak, which suggests that no
+single predictor will explain much on its own, and the models will need
+to combine several predictors. Finally, the two target variables have a
+correlation of 0.53, which is expected because `TARGET_AMT` is always
+\$0 when `TARGET_FLAG` is 0.
+
+```{r correlation}
+#| label: fig-correlation
+#| fig-cap: "Correlation Matrix of Numeric Variables"
+
+cor_matrix <- train |>
+  dplyr::select(where(is.numeric)) |>
+  cor(use = "pairwise.complete.obs")
+
+# Then we can plot the corr plot
+corrplot(cor_matrix, method = "color", type = "lower", order = "hclust",
+         addCoef.col = "black", number.cex = 0.6, tl.col = "black",
+         tl.cex = 0.6, tl.srt = 45, diag = FALSE)
+```
+
+## Missing Data
+
+The bar plot below shows the percentage of missing values for all
+predictors and the two target variables. Six predictors have missing
+values: `AGE`, `YOJ`, `INCOME`, `HOME_VAL`, `JOB`, and `CAR_AGE`. `JOB`
+and `CAR_AGE` have the most, at just over 6% each. Because the missing
+values are spread across different variables, removing every row with a
+missing value would discard many customers, so these values will be
+imputed instead. This is discussed further in the Data Preparation
+section. Neither target variable has missing values, so no observations
+need to be removed.
+
+```{r missing-data}
+#| label: missing-data
+#| fig-cap: "Missing Data Distribution"
+
+missing_props = train_long_num |>
+  group_by(variable) |>
+  summarise(proportion_missing = mean(is.na(value)), .groups = "drop") |>
+  rbind(train_long_chr |>
+          group_by(variable) |>
+          summarise(proportion_missing = mean(is.na(value)), .groups = "drop"))
+
+ggplot(missing_props, aes(x = reorder(variable, proportion_missing),
+                          y = proportion_missing)) +
+  geom_col(fill = "#3a86d4") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Proportion missing", title = "") +
+  theme_minimal(base_size = 12)
+```
+
+# Data Preparation
+
+Variables representing currency were cleaned (removing \$ and ,) prior
+to generating the distributions. The remainder of the data preparation
+is discussed in the following sections.
+
+## Training Set Splitting
+
+When developing a model, it is good practice to split the full training
+data into two parts: a training set and a test set. The model is built
+using the training set and then used to predict outcomes for the test
+set. Checking performance on the test set matters because a model will
+always look best on the data it was built from. The test set shows how
+the model is likely to perform on new customers. We split the data 80/20
+at random, but did so in a stratified way, meaning the proportion of
+customers with and without a crash (`TARGET_FLAG`) is kept the same in
+both sets. This is important because crashes are the minority outcome,
+and an unlucky random split could leave one set with noticeably fewer of
+them. In the full training data, about 73.6% of customers did not crash.
+The two tables below show that both the training set and the test set
+also have about 73.6% of customers without a crash.
+
+```{r split-train-log}
+#| label: split-train-log  
+ 
+set.seed(313) 
+train_partition = createDataPartition(train$TARGET_FLAG, p = 0.8, list = FALSE)
+train_part = train[train_partition, ] 
+test_part = train[-train_partition, ]  
+
+train_part |>   
+  group_by(TARGET_FLAG) |>   
+  summarize(n = n()) |>   
+  mutate(pct = round(n/sum(n)*100, 2)) |>  
+  kable()  
+
+test_part |>   
+  group_by(TARGET_FLAG) |>  
+  summarize(n = n()) |>   
+  mutate(pct = round(n/sum(n)*100, 2)) |>   
+  kable()
+```
+
+## Missing Value Imputation
+
+As previously described, missing values are handled with imputation. We
+used the `missRanger` R package, which fills in each missing value using
+random forests, a flexible model that predicts the missing value from
+the other columns. Instead of a simple fill-in such as the mean, median,
+or mode, this uses information from the other predictors. For example, a
+missing `HOME_VAL` can be estimated from a customer’s `INCOME` and
+`JOB`, rather than from the overall average. The same imputation models
+fit on the training data were then applied to the evaluation set, so
+both datasets are treated in the same way. The table below confirms that
+there are no missing values after imputation.
+
+```{r impute}
+#| label: impute
+
+# Generate imputation method
+imputation_fit = missRanger(as.data.frame(
+  train_part |> dplyr::select(-TARGET_FLAG, -TARGET_AMT)), keep_forests = TRUE,
+  verbose = FALSE)
+
+# Use imputation method on training dataset
+train_imputed = imputation_fit$data |>
+  mutate(TARGET_FLAG = train_part$TARGET_FLAG,
+         TARGET_AMT = train_part$TARGET_AMT)
+
+# Verify there are no more missing values
+train_imputed |> summarise(across(everything(), ~sum(is.na(.))))
+
+# Apply imputation method on test dataset
+test_imputed = predict(imputation_fit, newdata = test_part |> 
+                         dplyr::select(-TARGET_FLAG, -TARGET_AMT)) |>
+  mutate(TARGET_FLAG = test_part$TARGET_FLAG,
+         TARGET_AMT = test_part$TARGET_AMT)
+
+# Apply imputation method on evaluation dataset
+eval_imputed = predict(imputation_fit, newdata = evaluation |> 
+                         dplyr::select(-TARGET_FLAG, -TARGET_AMT)) |>
+  mutate(TARGET_FLAG = evaluation$TARGET_FLAG,
+         TARGET_AMT = evaluation$TARGET_AMT)
+```
+
+## Feature Transformations
+
+As noted earlier, several predictors are skewed rather than bell-shaped.
+Transforming them to be more symmetric helps keep extreme values from
+having too strong of an influence and generally leads to more stable
+models. We used the Box-Cox transformation, a common method for reducing
+skew. It requires all values to be strictly positive, so predictors
+containing zero or negative values were first shifted so that their
+minimum is 1. Shifting by a constant does not change the order or
+relative spacing of the values. The table below shows the amount each
+predictor was shifted by. The Box-Cox transformation was then applied to
+the predictors that needed it.
+
+```{r transformations}
+#| label: transformations
+
+num_data_train <- train_imputed |>
+  dplyr::select(where(is.numeric), -TARGET_FLAG, -TARGET_AMT)
+
+# Shift data that has values at or below 0.
+shift_amt <- sapply(num_data_train, \(x) {
+  m <- min(x, na.rm = TRUE)
+  if (m <= 0) 1 - m else 0
+})
+
+# View which columns will get shifted.
+shift_amt[shift_amt > 0] |>
+  t() |>
+  as.data.frame() |>
+  `rownames<-`("") |>
+  kable()
+
+# Function that adds the stored shift to each column.
+apply_shift <- function(df, shifts) {
+  for (col in names(shifts)) df[[col]] <- df[[col]] + shifts[[col]]
+  df
+}
+
+# Apply the shift, then apply Box-Cox, center, and scale.
+num_shifted_train <- apply_shift(num_data_train, shift_amt)
+```
+
+The table below shows the lambda values used for each predictor. Lambda
+is the power the data is raised to, with a value of 0 corresponding to a
+log transformation. After transformation, the numeric predictors were
+also centered and scaled so that each has a mean of 0 and a standard
+deviation of 1. Because the predictors are measured on very different
+scales (for example, `CLM_FREQ` versus `HOME_VAL`), this puts them on
+equal footing, makes the coefficients easier to compare, and helps the
+model fit more reliably.
+
+```{r pre-process}
+#| label: pre-process
+
+pp <- preProcess(num_shifted_train, method = c("BoxCox", "center", "scale"))
+lambdas <- sapply(pp$bc, \(x) x$lambda)
+lambdas
+
+train_pp <- predict(pp, num_shifted_train)
+train_pp = train_pp |> cbind(train_imputed |>
+                               dplyr::select(!where(is.numeric), TARGET_FLAG, TARGET_AMT))
+
+# Apply same shift and pre-processing to test data.
+test_shifted <- apply_shift(test_imputed |> dplyr::select(all_of(names(num_data_train))), shift_amt)
+test_pp <- predict(pp, as.data.frame(test_shifted))
+test_pp = test_pp |> cbind(test_imputed |>
+                             dplyr::select(!where(is.numeric), TARGET_FLAG, TARGET_AMT))
+
+# Apply same shift and pre-processing to evaluation data.
+eval_shifted <- apply_shift(eval_imputed |> dplyr::select(all_of(names(num_data_train))), shift_amt)
+eval_pp <- predict(pp, as.data.frame(eval_shifted))
+eval_pp = eval_pp |> cbind(eval_imputed |>
+                             dplyr::select(!where(is.numeric), TARGET_FLAG, TARGET_AMT))
+```
+
+The output below shows the recommended Box-Cox lambda for the target
+variable `TARGET_AMT`. This was calculated using only customers who were
+in an accident, since the \$0 values for all other customers will not be
+part of the model. The recommended lambda value is 0, which points to a
+log transformation. The density plot below shows `TARGET_AMT` after the
+log transformation, which is much more symmetric than before, such that
+the log transformation will be used in the models.
+
+```{r target-amt-process}
+#| label: target-amt-process
+#| fig-cap: "Variable Distributions after Transformation"
+
+train_pp |>
+  filter(TARGET_AMT > 0) |>
+  dplyr::select(TARGET_AMT) |>
+  preProcess(method = c("BoxCox"))
+
+train_pp_linear = train_pp |>
+  filter(TARGET_AMT > 0)
+
+test_pp_linear = test_pp |>
+  filter(TARGET_AMT > 0)
+
+train_pp |>
+  pivot_longer(cols = where(is.numeric), names_to = "variable", values_to = "value") |>
+  filter(!variable %in% c("TARGET_FLAG", "TARGET_AMT")) |>
+  ggplot(aes(x = value)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
+```
+
+# Build Models
+
+## Logistic Regression Models (`TARGET_FLAG`)
+
+For the purposes of this report, three separate logistic models are
+generated. The performance of the three models will be compared and used
+to select a model for predicting on the evaluation dataset.
+
+### Logistic Model 1
+
+The first logistic model uses all of the predictors. The summary below
+shows the results. Each categorical predictor is split into dummy
+variables, with one category left out to serve as the reference group.
+The coefficients for the other categories are interpreted relative to
+that reference. For example, for `SEX`, Male is the reference, so only a
+Female coefficient appears. Of the 13 numeric predictors, 10 are
+statistically significant (p \< 0.05). Of the 10 categorical predictors,
+5 are significant for every category shown, three are not significant
+for any category, and two (`EDUCATION` and `JOB`) are significant for
+only some of their categories. The model has an Akaike Information
+Criterion (AIC) of 5869.8. AIC balances how well the model fits against
+how many predictors it uses, with lower values being better, and it will
+be used to compare models along with accuracy, sensitivity, and
+specificity.
+
+```{r logit-1}
+#| label: logit-1
+
+log_train_data = train_pp |> dplyr::select(-TARGET_AMT)
+log_test_data = test_pp |> dplyr::select(-TARGET_AMT)
+
+log_train_model1 = glm(TARGET_FLAG ~ ., family = binomial, log_train_data)
+summary(log_train_model1)
+```
+
+### Logistic Model 2
+
+The second logistic model uses a subset of the predictors: `AGE`,
+`CAR_AGE`, `CAR_USE`, `CLM_FREQ`, `INCOME`, `JOB`, `KIDSDRIV`,
+`MVR_PTS`, `OLDCLAIM`, `REVOKED`, and `TRAVTIME`. These include
+predictors that had the strongest correlations with `TARGET_FLAG`, such
+as `MVR_PTS` and `CLM_FREQ`, as well as others that logically relate to
+crash risk. For example, `KIDSDRIV` is included because teenagers in the
+household are often new drivers, and new drivers tend to crash more
+often.
+
+The summary below shows the results of the second model. Of the 8
+numeric predictors, 7 are statistically significant (p \< 0.05). Of the
+3 categorical predictors, 2 are significant for every category shown,
+while `JOB` is significant for only some of its categories. The model
+has an AIC of 6634.2, about 765 higher than the first logistic model,
+which suggests it fits worse. However, a simpler model can still be the
+better choice, so this is explored further in the Select Models section.
+
+```{r logit-2}
+#| label: logit-2
+
+# Subset of predictors selected
+log_train_data2 = train_pp |>
+  dplyr::select(AGE, CAR_AGE, CAR_USE, CLM_FREQ, INCOME, JOB, KIDSDRIV, MVR_PTS, OLDCLAIM,
+                REVOKED, TRAVTIME, TARGET_FLAG)
+log_test_data2 = test_pp |>
+  dplyr::select(AGE, CAR_AGE, CAR_USE, CLM_FREQ, INCOME, JOB, KIDSDRIV, MVR_PTS, OLDCLAIM,
+                REVOKED, TRAVTIME, TARGET_FLAG)
+
+log_train_model2 = glm(TARGET_FLAG ~ ., family = binomial, log_train_data2)
+summary(log_train_model2)
+```
+
+### Logistic Model 3
+
+The third logistic model uses backward step-wise elimination to choose
+its predictors. The process starts with all of the predictors, as in the
+first logistic model. At each step, the predictor whose removal improves
+the model’s AIC the most is dropped, and the model is refit with the
+smaller set of predictors. This repeats until removing any more
+predictors no longer improves the AIC. The result is a simpler model
+that keeps only the predictors that provide meaningful contributions.
+
+The summary below shows the results of the third model. After
+elimination, 10 of the original 13 numeric predictors and 7 of the
+original 10 categorical predictors remain. All of the retained numeric
+predictors are statistically significant (p \< 0.05), and each retained
+categorical predictor has at least one significant category. The model
+has an AIC of 5860.3, which is 9.5 lower than the first logistic model.
+This suggests a slightly better fit with fewer predictors. This is
+explored further in the Select Models section using other metrics, such
+as accuracy, sensitivity, and specificity.
+
+```{r logit-3}
+#| label: logit-3
+
+log_train_model3 = step(log_train_model1, direction = "backward", trace = 1)
+summary(log_train_model3)
+```
+
+## Linear Regression Models (`TARGET_AMT`)
+
+As previously stated, the linear models are fitted on the training
+dataset that was filtered to only include customers who were in a crash.
+This is to remove any potential bias from observations where the
+customer was not in a crash (and thus had a cost of \$0).
+
+### Linear Model 1
+
+As with the first logistic model, the first linear model, which predicts
+`TARGET_AMT`, uses all of the predictors. It is fit only on customers
+who were in a crash, and it predicts the log of `TARGET_AMT`, since the
+earlier Box-Cox analysis recommended a log transformation to make the
+costs more symmetric. As a result, predictions from this model are
+exponentiated to convert them back to dollars.
+
+The summary below shows the results. Of the 13 numeric predictors, only
+one is statistically significant (p \< 0.05): `BLUEBOOK`, which
+represents the value of the vehicle. Its coefficient is positive,
+meaning that the cost increases as the value of the vehicle increases.
+This logically makes sense, as it is typically more expensive to fix a
+more valuable vehicle. None of the 10 categorical predictors are
+statistically significant. The model has an RSE of 0.8045 (on the log
+scale) and an R² of about 0.033, meaning it explains only about 3% of
+the variation in crash costs. This suggests a poor fit, which is
+explored further in the Select Models section.
+
+```{r lm-1}
+#| label: lm-1
+
+linear_train_data = train_pp_linear |> dplyr::select(-TARGET_FLAG)
+linear_test_data = test_pp_linear |> dplyr::select(-TARGET_FLAG)
+
+linear_train_model1 = lm(log(TARGET_AMT) ~ ., data = linear_train_data)
+summary(linear_train_model1)
+```
+
+### Linear Model 2
+
+The second linear model uses backward stepwise elimination to choose its
+predictors, as in the third logistic model. Only three of the original
+23 predictors were kept: `BLUEBOOK`, `MSTATUS`, and `SEX`. The summary
+below shows the results. The model has an RSE of 0.8024 (on the log
+scale) and an R² of about 0.019, meaning it explains only about 2% of
+the variation in crash costs. The R² is slightly lower than the first
+linear model’s (0.033), which is expected when predictors are removed,
+while the RSE is slightly better. In other words, the second model
+performs about as well as the first while being much simpler. Both
+models explain very little of the variation in cost, which is explored
+further in the Select Models section.
+
+```{r lm-2}
+#| label: lm-2
+
+linear_train_model2 = step(linear_train_model1, direction = "backward", trace = 1)
+summary(linear_train_model2)
+```
+
+## Coefficient Discussion
+
+For the purposes of discussing the coefficients of the models, only
+predictors that were statistically significant (p \< 0.05) are
+discussed.
+
+Across all three logistic models, most coefficients have a direction
+that makes sense. For example, `REVOKED` and `KIDSDRIV` are positive in
+every model, which fits the idea that customers with a revoked license
+or teenage drivers in the household are higher-risk.
+
+Two predictors are less intuitive. In the first model, `HOMEKIDS` has a
+positive coefficient, meaning more children at home goes with a higher
+chance of a crash. One might expect parents to drive more cautiously,
+though the model may be picking up the effects of related predictors. In
+the second and third models, `OLDCLAIM` is negative, even though higher
+past claim totals would be expected to mean higher crash risk. A likely
+reason is that `OLDCLAIM` overlaps with `CLM_FREQ`. Once the model
+accounts for the number of past claims, a higher dollar total may simply
+reflect a few expensive claims rather than a riskier driver.
+
+In both linear models, `BLUEBOOK` is statistically significant (p \<
+0.05) and has a positive coefficient, which makes sense, since a more
+expensive vehicle costs more to repair or replace. The second linear
+model also finds `MSTATUS`, the marital status of the driver, to be
+significant and positive for unmarried drivers compared to married
+drivers. This is plausible, as drivers who are married may be less
+likely to take risks while driving, thus reducing their chances to get
+in a crash. All significant coefficients have a sensible direction, but
+because both models explain only a small share of the variation in crash
+cost, these effects are minimal.
+
+# Select Models
+
+## Multicollinearity
+
+The table below shows the Variance Inflation Factor (VIF) for the
+predictors in each of the three logistic models. VIF measures how much a
+predictor overlaps with the other predictors, which is known as
+multicollinearity. When predictors overlap heavily, the model has
+trouble separating their individual effects. A VIF above 5 is a common
+warning sign. In all three logistic models, `OLDCLAIM` and `CLM_FREQ`
+both have a VIF above 19, indicating a high level of multicollinearity,
+while the remaining predictors are below the benchmark. This is
+consistent with the earlier explanation for the surprising negative sign
+of `OLDCLAIM`. Because the two predictors carry much of the same
+information, it may be beneficial to remove one of them, in a future
+model.
+
+```{r vif}
+#| label: vif
+
+get_vif_adj <- function(model) {
+  v <- vif(model)
+  if (is.matrix(v)) {
+    tibble(Term = rownames(v),
+           VIF_adj = v[, "GVIF^(1/(2*Df))"]^2)
+  } else {
+    tibble(Term = names(v), VIF_adj = as.numeric(v))
+  }
+}
+
+list(
+  "Model 1: All Features"       = log_train_model1,
+  "Model 2: Pruned"             = log_train_model2,
+  "Model 3: Backward Elimination" = log_train_model3
+) |>
+  map(get_vif_adj) |>
+  bind_rows(.id = "Model") |>
+  pivot_wider(names_from = Model, values_from = VIF_adj) |>
+  arrange(desc(`Model 1: All Features`)) |>
+  kable(digits = 2, caption = "Adjusted VIF by Model")
+```
+
+The table below shows the VIF for the predictors in the two linear
+models. Similar to the logistic models, the only sign of
+multicollinearity is between `OLDCLAIM` and `CLM_FREQ` in the first
+model with all predictors, suggesting that one of these should be
+removed from the model. However, neither of these are included in the
+second linear model that utilized backward step-wise elimination to
+select the predictors.
+
+```{r line-vif}
+#| label: line-vif
+
+list(
+  "Model 1: All Features"         = linear_train_model1,
+  "Model 2: Backward Elimination" = linear_train_model2
+) |>
+  map(get_vif_adj) |>
+  bind_rows(.id = "Model") |>
+  pivot_wider(names_from = Model, values_from = VIF_adj) |>
+  arrange(desc(`Model 1: All Features`)) |>
+  kable(digits = 2, caption = "Adjusted VIF by Model")
+```
+
+## Logistic Model Evaluation
+
+A confusion matrix is generated for each of the 3 logistic models, both
+for the training set and test set. All 6 of the confusion matrices can
+be found below.
+
+```{r logit-eval}
+#| label: logit-eval
+
+get_metrics = function(model, data, model_name, set_name) {
+  
+  probs = predict(model, newdata = data, type = "response")
+  pred_class = ifelse(probs > 0.5, 1, 0)
+
+  cm = confusionMatrix(factor(pred_class, levels = c(0, 1)),
+                        factor(data$TARGET_FLAG, levels = c(0, 1)),
+                        positive = "1")
+
+  auc_val = as.numeric(pROC::auc(pROC::roc(data$TARGET_FLAG, probs, quiet = TRUE)))
+
+  metrics = data.frame(
+    Model       = model_name,
+    Set         = set_name,
+    Accuracy    = cm$overall[["Accuracy"]],
+    Error_Rate  = 1 - cm$overall[["Accuracy"]],
+    Precision   = cm$byClass[["Precision"]],
+    Sensitivity = cm$byClass[["Sensitivity"]],
+    Specificity = cm$byClass[["Specificity"]],
+    F1          = cm$byClass[["F1"]],
+    AUC         = auc_val
+  )
+  
+  list(metrics = metrics, cm = cm$table)
+}
+
+m1_train <- get_metrics(log_train_model1, train_pp, "Model 1", "Train")
+m1_test  <- get_metrics(log_train_model1, test_pp,  "Model 1", "Test")
+m2_train <- get_metrics(log_train_model2, train_pp, "Model 2", "Train")
+m2_test  <- get_metrics(log_train_model2, test_pp,  "Model 2", "Test")
+m3_train <- get_metrics(log_train_model3, train_pp, "Model 3", "Train")
+m3_test  <- get_metrics(log_train_model3, test_pp,  "Model 3", "Test")
+
+kable(m1_train$cm, caption = "Model 1 - Train Set")
+kable(m1_test$cm, caption = "Model 1 - Test")
+kable(m2_train$cm, caption = "Model 2 - Train Set")
+kable(m2_test$cm, caption = "Model 2 - Test Set")
+kable(m3_train$cm, caption = "Model 3 - Train Set")
+kable(m3_test$cm, caption = "Model 3 - Test Set")
+```
+
+The table below summarizes the performance metrics for the logistic
+models on both the training and test sets. The benchmark for accuracy is
+73.6%, the share of customers who were not in a crash, since a model
+that predicted “no crash” for everyone would be right that often. On the
+training set, model 1 had the highest accuracy of 79.4%. On the test
+set, model 3 performed best at 77.8%. Overall, the models beat the
+benchmark by only about 4 to 6 percentage points, so none are
+particularly strong at classifying customers correctly.
+
+Sensitivity is the share of actual crashes a model correctly identifies,
+and specificity is the share of non-crashes it correctly identifies. All
+three models are much better at identifying non-crashes, with
+specificity of 90.8% to 94.0% but sensitivity of only 24.7% to 43.8%. In
+other words, the models miss most of the customers who actually crash,
+which is expected given that only about one in four customers crashes
+and a 0.5 cutoff is used. Model 2 has the best specificity on the test
+set but the worst sensitivity, while Model 3 has the best sensitivity
+and specificity. Model 3 also has the highest F1 score
+on the test set, which balances how many predicted crashes are correct
+against how many actual crashes are found. For AUC, which measures how
+well a model ranks crashes above non-crashes, Model 3 is second, behind
+Model 1 by only 0.001.
+
+The second table below shows the AIC for each model. Model 3, which used
+backward step-wise elimination, has the lowest, and Model 2 has the
+highest. AIC is calculated on the training data, so it is a supporting
+check rather than a test-set measure.
+
+```{r logit-metrics}
+#| label: logit-metrics
+
+results <- rbind(m1_train$metrics, m1_test$metrics,
+                 m2_train$metrics, m2_test$metrics,
+                 m3_train$metrics, m3_test$metrics)
+
+kable(results, digits = 3, row.names = FALSE)
+
+
+data.frame(Model = c("Model 1", "Model 2", "Model 3"),
+           AIC = c(AIC(log_train_model1), AIC(log_train_model2), AIC(log_train_model3))) |>
+  kable(digits = 1, rownames = FALSE)
+```
+
+## Linear Model Evaluation
+
+The table below shows the performance metrics for the two linear models
+on both the training and test sets. The Root Mean Square Error (RMSE) is
+the typical size of the prediction error, in dollars, so lower is
+better. Both models perform slightly better on the test set than on the
+training set, which is unexpected. This is most likely random variation,
+since the test set is small and a few very expensive claims can shift
+the results. The R² values are both close to 0, which shows that neither
+model explains much of the variation in crash costs. Note that these R²
+values differ from the ones in the model summaries, because the
+summaries are on the log scale, while the values in the table are
+calculated on dollar amounts after the predictions were exponentiated.
+Finally, the F-statistic tests whether a model explains more variation
+than a model with no predictors, such that a higher value provides more
+evidence that it does. Looking at the F-statistics of the two linear
+models, Model 2 has a higher value, which reflects that it achieves a
+similar fit with fewer predictors.
+
+```{r lm-eval}
+#| label: lm-eval
+#| fig-cap: "Residual diagnostics for the selected linear model"
+
+get_lm_metrics <- function(model, data, model_name, set_name) {
+  
+  pred   <- exp(predict(model, newdata = data))
+  actual <- data$TARGET_AMT
+  
+  sse <- sum((actual - pred)^2)
+  sst <- sum((actual - mean(actual))^2)
+  
+  f_stat <- NA_real_
+  if (set_name == "Train") {
+    f_stat <- unname(summary(model)$fstatistic["value"])
+  }
+  
+  data.frame(
+    Model  = model_name,
+    Set    = set_name,
+    MSE   = mean((actual - pred)^2),
+    RMSE   = sqrt(mean((actual - pred)^2)),
+    R2     = 1 - sse / sst,   # R-squared in dollars
+    F_stat = f_stat
+  )
+}
+
+lm_results <- rbind(
+  get_lm_metrics(linear_train_model1, train_pp, "Model 1", "Train"),
+  get_lm_metrics(linear_train_model1, test_pp,  "Model 1", "Test"),
+  get_lm_metrics(linear_train_model2, train_pp, "Model 2", "Train"),
+  get_lm_metrics(linear_train_model2, test_pp,  "Model 2", "Test")
+)
+
+kable(lm_results, digits = 3, row.names = FALSE)
+```
+
+The two sets of residual plots provide diagnostics for the linear models
+predicting `TARGET_AMT`. The residuals-versus-fitted plots check whether
+the models missed any pattern, the Q-Q plots check whether the errors
+are roughly bell-shaped, and the leverage plots check for unusually
+influential points. For both models, the residuals are centered around 0
+with a fairly even spread, and the Q-Q plots follow the line closely
+apart from the tails. No points appear to have an outsized influence.
+Because the diagnostics and the performance metrics are very similar for
+both models, Model 2 is selected since it achieves the same results with
+fewer predictors. Note that these checks only show that the model’s
+assumptions are reasonable. The low R² still means both models explain
+little of the variation in crash cost.
+
+```{r lm-residuals}
+#| label: lm-residuals
+#| fig-cap: "Residual diagnostics for the selected linear model"
+
+plot(linear_train_model1)
+plot(linear_train_model2)
+```
+
+## Final Model Selection
+
+Based on the results in the previous sections, the third logistic model
+and the second linear model are selected for predicting on the
+evaluation set. Both were built using backward stepwise elimination,
+which removes unnecessary predictors. The third logistic model had the
+best sensitivity and F1 score on the test set, the lowest AIC, and an
+AUC nearly tied with the first model, while using fewer predictors. The
+second linear model performed about the same as the first, so it is
+chosen for its simplicity.
+
+# Predictions on Evaluation Data
+
+The two selected models are used to predict on the evaluation set. The
+evaluation set was preprocessed in the same way as the training data,
+including imputation, transformations, centering, and scaling, using the
+values calculated from the training data. The logistic model gives the
+probability of a crash, which is classified using the 0.5 threshold. The
+linear model predicts the log of `TARGET_AMT`, so its outputs are
+exponentiated to convert them to dollars.
+
+The table below shows the distribution of the predicted `TARGET_FLAG`
+values. About 81.8% of customers (1752 out of 2141) are predicted not to
+crash, compared with 73.6% in the training data, a difference of about 8
+percentage points. This is expected, since the model has low sensitivity
+at the 0.5 threshold and therefore predicts fewer crashes than actually
+occur.
+
+```{r predictions}
+#| label: predictions
+
+eval_log = predict(log_train_model3, newdata = eval_pp |> dplyr::select(-TARGET_AMT),
+                   type = "response")
+
+eval_pp_updated = eval_pp |>
+  mutate(
+    P_TARGET_FLAG = eval_log,
+    TARGET_FLAG   = ifelse(eval_log > 0.5, 1, 0),
+    pred_amt      = exp(predict(linear_train_model2, newdata = eval_pp)),
+    TARGET_AMT    = ifelse(TARGET_FLAG == 1, pred_amt, 0)
+  ) |>
+  dplyr::select(-pred_amt)
+
+eval_pp_updated |> write_csv("hw4_eval_predictions.csv")
+
+eval_pp_updated |>
+  group_by(TARGET_FLAG) |>
+  summarize(n = n()) |>
+  mutate(pct = round(n/sum(n)*100, 2)) |>
+  kable()
+```
+
+The density plot below shows the distribution of predicted `TARGET_AMT`
+for the 389 customers predicted to be in a crash. The predictions range
+from about \$3,000 to \$5,000, with a peak just under \$4,000. This is
+much narrower than the actual crash costs in the training data, which
+have a long tail of very expensive claims. There are two likely reasons.
+First, the linear model explains very little of the variation in cost,
+so it predicts similar amounts for most customers. Second,
+exponentiating a log-scale prediction gives a typical (median) cost
+rather than the average, and because a few very large claims pull the
+average up, the predictions tend to run low.
+
+```{r eval-target-amt}
+#| label: eval-target-amt
+#| fig-cap: "Distributions of Evaluated TARGET_AMT"
+
+eval_pp_updated |>
+  filter(TARGET_FLAG == 1) |>
+  ggplot(aes(x = TARGET_AMT)) +
+  geom_density(bins = 20, fill = "#3a86d4", colour = "white") +
+  coord_cartesian(xlim = c(0, 7500)) +
+  labs(x = NULL, y = "Count", title = "TARGET_AMT Distribution") +
+  theme_minimal(base_size = 9.6)
+```
+
+## Conclusion
+
+The goal of this report was to build models that predict whether a
+customer will be in a car crash (`TARGET_FLAG`) and, if they are, how
+much the crash will cost (`TARGET_AMT`). The training data contains
+8,161 customers, with about 26% of them being in a crash. Several
+predictors were skewed, and six had missing values. These issues were
+handled with random forest imputation, Box-Cox transformations, and
+centering and scaling. The cost target was log transformed since the
+Box-Cox method recommended it.
+
+Three logistic models and two linear models were built and compared. The
+third logistic model, which used backward step-wise elimination, was
+selected to predict crashes. It had the lowest AIC, the best sensitivity
+and F1 score on the test set, and an AUC nearly tied with the first
+model, while using fewer predictors. Its accuracy of about 77.8% on the
+test set beats the 73.6% benchmark for always predicting “no crash” by
+only a few percentage points, and it misses most of the customers who
+actually crash at the 0.5 threshold. The second linear model, also built
+with backward step-wise elimination, was selected to predict cost. It
+performed about the same as the first linear model, but with only four
+predictors.
+
+The biggest limitation is the cost model. Both linear models explain
+only about 2% to 3% of the variation in crash costs, so the predicted
+costs fall in a narrow range of about \$3,000 to \$5,000 and miss the
+very expensive claims. This is partly because exponentiating log-scale
+predictions gives a typical cost rather than an average. The available
+predictors appear to say much more about whether a crash will happen
+than about how costly it will be.
+
+# Appendix: R Code
+
+*This section is auto-populated by re-echoing the code chunks above when
+rendering to PDF; no additional content is needed here unless
+supplementary code is included.*
+
+```{r}
+#| label: appendix-code
+#| ref.label: !expr knitr::all_labels()
+#| echo: true
+#| eval: false
+```
