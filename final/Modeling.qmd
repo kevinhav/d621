@@ -1,0 +1,142 @@
+---
+title: "Soccer Goal-Scoring Models"
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(caret)
+```
+
+
+```{r}
+# Load the cleaned team-match dataset
+local_path <- "processed_data/soccer_model_features.csv"
+
+# GitHub fallback
+github_url <- paste0(
+  "https://raw.githubusercontent.com/",
+  "kevinhav/d621/main/final/processed_data/",
+  "soccer_team_match_2017_18.csv"
+)
+
+model_data <- read_csv(
+  if (file.exists(local_path)) local_path else github_url,
+  show_col_types = FALSE
+)
+```
+
+```{r}
+# Select features for modeling
+model_data_slice <- model_data |>
+  dplyr::select(-(match_date:opponent_name), -passes_per_shot) |>
+  mutate(home = as.factor(home))
+```
+
+```{r}
+# Split data into test and training sets
+set.seed(7284)
+
+match_ids  <- unique(model_data_slice$match_id)
+train_ids  <- sample(match_ids, size = 0.8 * length(match_ids))
+
+train <- model_data_slice |> filter(match_id %in% train_ids)
+test  <- model_data_slice |> filter(!match_id %in% train_ids)
+
+# Check that both test and train have both teams from each match
+nrow(train) / n_distinct(train$match_id)
+nrow(test) / n_distinct(test$match_id)
+```
+
+```{r}
+# Shift data and check for Box Cox transformations
+num_data_train <- train |>
+  dplyr::select(where(is.numeric), -goals, -match_id)
+
+# Shift data that has values at or below 0.
+shift_amt <- sapply(num_data_train, \(x) {
+  m <- min(x, na.rm = TRUE)
+  if (m <= 0) 1 - m else 0
+})
+
+# View which columns will get shifted.
+shift_amt[shift_amt > 0] |>
+  t() |>
+  as.data.frame() |>
+  `rownames<-`("") |>
+  kable()
+
+# Function that adds the stored shift to each column.
+apply_shift <- function(df, shifts) {
+  for (col in names(shifts)) df[[col]] <- df[[col]] + shifts[[col]]
+  df
+}
+
+# Apply the shift, then apply Box-Cox, center, and scale.
+num_shifted_train <- apply_shift(num_data_train, shift_amt) |> as.data.frame()
+
+pp <- preProcess(num_shifted_train, method = c("BoxCox", "center", "scale"))
+lambdas <- sapply(pp$bc, \(x) x$lambda)
+lambdas
+
+train_pp <- predict(pp, num_shifted_train)
+train_pp <- train_pp |> cbind(train |> dplyr::select(!where(is.numeric), goals))
+
+# Apply same shift and pre-processing to test data.
+test_shifted <- apply_shift(test |> dplyr::select(all_of(names(num_data_train))), shift_amt)
+test_pp <- predict(pp, as.data.frame(test_shifted))
+test_pp <- test_pp |> cbind(test |> dplyr::select(!where(is.numeric), goals))
+```
+
+```{r}
+train_pp |>
+  mutate(goals_plus_one = goals + 1) |>
+  dplyr::select(goals_plus_one) |>
+  preProcess(method = c("BoxCox"))
+
+train_pp <- train_pp |>
+  mutate(log_goals_plus_one = log(goals + 1))
+
+test_pp <- test_pp |>
+  mutate(log_goals_plus_one = log(goals + 1))
+
+train_pp |>
+  pivot_longer(cols = where(is.numeric), names_to = "variable", values_to = "value") |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 20, fill = "#3a86d4", colour = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  labs(x = NULL, y = "Count", title = "Variable Distributions") +
+  theme_minimal(base_size = 9.6)
+```
+
+```{r}
+# Model 1: Linear Regression w/ Opponent
+lm_1 = lm(goals ~ . - log_goals_plus_one, train_pp)
+summary(lm_1)
+
+# Model 2: Linear Regression w/o Opponent
+lm_2 = lm(goals ~ . - log_goals_plus_one - opponent_shots - opponent_passes
+          - opponent_pass_accuracy_pct, train_pp)
+summary(lm_2)
+
+# Model 3: Linear Regression on Log Goals w/ Opponent
+lm_3 = lm(log_goals_plus_one ~ . - goals, train_pp)
+summary(lm_3)
+
+# Model 4: Linear Regression on Log Goals w/ Opponent
+lm_4 = lm(log_goals_plus_one ~ . - goals - opponent_shots - opponent_passes
+          - opponent_pass_accuracy_pct, train_pp)
+summary(lm_4)
+```
